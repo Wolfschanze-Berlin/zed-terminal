@@ -298,7 +298,7 @@ fn main() {
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(std::thread::available_parallelism().map_or(1, |n| n.get().div_ceil(2)))
-        .stack_size(10 * 1024 * 1024)
+        .stack_size(2 * 1024 * 1024)
         .thread_name(|ix| format!("RayonWorker{}", ix))
         .build_global()
         .unwrap();
