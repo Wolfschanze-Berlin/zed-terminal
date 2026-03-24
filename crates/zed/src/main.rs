@@ -11,7 +11,6 @@ use client::{Client, ProxySettings, UserStore, parse_zed_link};
 use collections::HashMap;
 use crashes::InitCrashHandler;
 use db::kvp::{GlobalKeyValueStore, KeyValueStore};
-use editor::Editor;
 use extension::ExtensionHostProxy;
 use fs::{Fs, RealFs};
 use futures::{StreamExt, channel::oneshot, future};
@@ -22,7 +21,6 @@ use gpui_platform;
 
 use gpui_tokio::Tokio;
 use language::LanguageRegistry;
-use onboarding::{FIRST_OPEN, show_onboarding_view};
 use project_panel::ProjectPanel;
 use remote::RemoteConnectionOptions;
 use reqwest_client::ReqwestClient;
@@ -687,7 +685,6 @@ fn main() {
         markdown_preview::init(cx);
         csv_preview::init(cx);
         svg_preview::init(cx);
-        onboarding::init(cx);
         settings_ui::init(cx);
         keymap_editor::init(cx);
         extensions_ui::init(cx);
@@ -1134,7 +1131,6 @@ pub(crate) async fn restore_or_create_workspace(
     app_state: Arc<AppState>,
     cx: &mut AsyncApp,
 ) -> Result<()> {
-    let kvp = cx.update(|cx| KeyValueStore::global(cx));
     if let Some((multi_workspaces, remote_workspaces)) = restorable_workspaces(cx, &app_state).await
     {
         let mut results: Vec<Result<(), Error>> = Vec::new();
@@ -1243,8 +1239,6 @@ pub(crate) async fn restore_or_create_workspace(
                 .await?;
             }
         }
-    } else if matches!(kvp.read_kvp(FIRST_OPEN), Ok(None)) {
-        cx.update(|cx| show_onboarding_view(app_state, cx)).await?;
     } else {
         cx.update(|cx| {
             workspace::open_new(
@@ -1256,7 +1250,12 @@ pub(crate) async fn restore_or_create_workspace(
                     match restore_on_startup {
                         workspace::RestoreOnStartupBehavior::Launchpad => {}
                         _ => {
-                            Editor::new_file(workspace, &Default::default(), window, cx);
+                            terminal_view::TerminalView::deploy(
+                                workspace,
+                                &workspace::NewCenterTerminal::default(),
+                                window,
+                                cx,
+                            );
                         }
                     }
                 },
