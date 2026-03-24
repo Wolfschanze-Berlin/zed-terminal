@@ -2,7 +2,7 @@
 
 ## Vision
 
-Zed Terminal is a GPU-accelerated, terminal-first application built on Zed's GPUI framework. Terminals tile in the center pane (iTerm2-style). The full Zed editor is available as split panes alongside terminals. All AI/collaboration features are stripped. Enhanced SSH with a ports panel, connection manager, auto-forwarding, persistent tunnels, and remote file browsing. A read-only Agentlytics-style dashboard tracks external AI tool usage. GitHub integration provides activity feeds, PR status, and issue tracking. A Rust-native QMD knowledge layer powered by OpenAI embeddings enables semantic search across terminal history, SSH notes, and workspace metadata.
+Zed Terminal is a GPU-accelerated, terminal-first application built on Zed's GPUI framework. Terminals tile in the center pane (iTerm2-style). The full Zed editor is available as split panes alongside terminals. All AI code-generation and collaboration features are stripped from the editor workflow. Enhanced SSH with a ports panel, connection manager, auto-forwarding, persistent tunnels, and remote file browsing. A read-only Agentlytics-style dashboard tracks external AI tool usage. GitHub integration provides activity feeds, PR status, and issue tracking. A Rust-native QMD knowledge layer enables semantic search across terminal history, SSH notes, and workspace metadata — the only AI dependency retained is the OpenAI embeddings API for vectorization, used exclusively for search (not code generation or inline assistance).
 
 ## Approach
 
@@ -80,7 +80,7 @@ Zed Terminal is a GPU-accelerated, terminal-first application built on Zed's GPU
 - **Extensions:** extension, extension_api, extension_host, extensions_ui (languages + themes)
 - **Infrastructure:** fs, lsp, language, languages, task, paths, cli, client, http_client, etc.
 
-### 1.4 Crates to Add (~7 new crates)
+### 1.4 Crates to Add (6 new crates)
 
 | Crate | Purpose | Dock Position |
 |-------|---------|---------------|
@@ -90,6 +90,20 @@ Zed Terminal is a GPU-accelerated, terminal-first application built on Zed's GPU
 | history_panel | Folder history + session restore + bookmarks | Left |
 | github_panel | GitHub activity feed, PRs, issues | Right |
 | qmd_store | Rust-native vector DB (Tantivy + sqlite-vec + OpenAI embeddings) | N/A (library) |
+
+### 1.5 Kept Crates with Dependencies on Removed Crates
+
+These kept crates contain references to removed AI/collab crates and require surgical cleanup:
+
+| Kept Crate | References To | Cleanup Required |
+|-----------|---------------|------------------|
+| editor | edit_prediction, copilot, language_model | Remove inline prediction hooks, copilot ghost text, AI context menu items. ~10 files affected (editor.rs, element.rs, mouse_context_menu.rs). |
+| project | DisableAiSettings, AgentRegistryStore, context_server | Simplify to always-disabled. Remove agent registry init. ~5 files. |
+| title_bar | collab_ui, copilot_ui, language_model | Remove AI/collab status indicators from title bar. ~3 files. |
+| workspace | agent panel references in serialization | Remove agent panel deserialization fallbacks. ~2 files. |
+| terminal_view | terminal_slash_command (AI assistant) | Remove slash command registration. 1 file. |
+
+**Estimated cleanup effort:** ~25 files across 5 crates, mostly removing conditional branches and feature-gated imports. The `DisableAiSettings` code paths already handle the "AI disabled" case, so many of these are just removing the toggle and hardcoding the disabled path.
 
 ---
 
@@ -148,7 +162,9 @@ Zed Terminal is a GPU-accelerated, terminal-first application built on Zed's GPU
    - Current: 24,000 sequential calls, each doing subpixel computation + atlas lookup + sprite insertion
    - Fix: pre-compute all glyph positions in a batch, insert sprites in bulk. ~24ms -> ~5ms.
 
-**Target:** <10ms per frame for 200x120 terminal (60fps with headroom).
+**Note on compounding:** Tier savings are not independent. Dirty-line tracking (Tier 2) reduces the number of cells processed, which diminishes the per-cell savings from Tier 1 and 3 fixes. Also, the 24ms `paint_glyph` estimate is worst-case (cold atlas); after warmup with ASCII-heavy terminal content, atlas lookups are cached and the actual cost may be 5-10ms. Realistic combined target after all tiers: ~8-12ms per frame.
+
+**Target:** <12ms per frame for 200x120 terminal (60fps with headroom).
 
 ### 2.2 SSH/Remote Performance
 
@@ -176,10 +192,10 @@ Windows OpenSSH lacks ControlMaster (Win32-OpenSSH#405). Current workaround spaw
 | Defer block_on for telemetry IDs | main.rs:576-578 | -100-200ms | 0 |
 | Lazy-load built-in themes (keep active only) | main.rs:642 | -50-100ms | -20MB |
 | Reduce Rayon thread stack 10MB -> 2MB | main.rs:307 | 0 | -40-80MB |
-| Reduce default scrollback 10k -> 5k lines | terminal.rs:342 | 0 | -80MB/terminal |
+| Reduce default scrollback 10k -> 5k lines | terminal.rs:342 | 0 | ~15-30MB/terminal (estimated 200 cols × 32 bytes/cell × 5k lines saved) |
 | Lazy-load extension host | main.rs:508 | -20-50ms | -20MB |
 
-**Total potential:** -230-570ms startup, -230-270MB RAM.
+**Total potential:** -230-570ms startup, ~165-250MB RAM saved.
 
 ---
 
@@ -191,8 +207,8 @@ Windows OpenSSH lacks ControlMaster (Win32-OpenSSH#405). Current workaround spaw
 
 **Changes:**
 - On startup, center pane opens terminal (not editor welcome screen)
-- Keyboard splitting: `Ctrl+D` horizontal, `Ctrl+Shift+D` vertical
-- Pane navigation: `Ctrl+[arrow]` move focus, `Ctrl+Shift+[arrow]` resize
+- Keyboard splitting: leader-key approach to avoid conflict with `Ctrl+D` (EOF in terminal). Default: `Ctrl+B, D` horizontal, `Ctrl+B, Shift+D` vertical (tmux-style leader). Configurable via keybindings.
+- Pane navigation: `Ctrl+B, [arrow]` move focus, `Ctrl+B, Shift+[arrow]` resize
 - Opening files creates a split pane alongside terminals
 - Full layout persistence via existing `persistence.rs` serialization
 
@@ -210,7 +226,9 @@ New crate: `ssh_panel` implementing `Panel` trait. Right dock.
 - Real-time latency indicator from heartbeat data
 - Inline config editing (port, user, key, jump hosts)
 
-**Data:** Settings stored in `~/.config/zed-terminal/ssh_connections.json`. Connection state from `RemoteClient` entity observation.
+**Data:** Settings stored in `~/.zed-terminal/ssh_connections.json`. Connection state from `RemoteClient` entity observation.
+
+**Error handling:** Expired/invalid SSH keys show inline error with "Re-authenticate" button. Connection timeouts show retry with backoff. Unreachable hosts show last-known status with auto-retry.
 
 ### 3.3 Ports Panel
 
@@ -225,10 +243,12 @@ New crate: `ports_panel` implementing `Panel` trait. Right dock.
 - One-click open forwarded HTTP port in browser
 
 **Implementation:**
-- Extend `SshConnectionOptions.port_forwards` to be mutable at runtime
-- Use existing `build_forward_ports_command()` (`remote_client.rs:1363`)
-- Auto-detect via periodic remote command execution
-- Persistent forwards stored in workspace DB
+- Port forwards added at runtime by spawning a new SSH `-N -L` process per forward (not by modifying the existing connection). This avoids tearing down the ControlMaster connection. Each forward process is tracked and can be independently killed.
+- Use existing `build_forward_ports_command()` (`remote_client.rs:1363`) as the command builder
+- Auto-detect via periodic `ss -tlnp` remote command execution (every 5s)
+- Persistent forwards stored in workspace DB and re-established on reconnect
+
+**Error handling:** If a forward fails (port in use, permission denied), show error in panel with retry option. If SSH connection drops, mark all forwards as "reconnecting" and re-establish when connection recovers.
 
 ### 3.4 Folder History + Session Restore + Bookmarks Panel
 
@@ -254,7 +274,7 @@ New crate: `analytics_panel` implementing `Panel` trait. Right dock.
 - Trend charts: monthly usage, peak hours, weekday patterns
 - Model usage: top models, token distribution
 
-**Data source:** Reads from `~/.agentics/` or similar directory. No AI in the app.
+**Data source:** Reads JSONL session logs from `~/.agentics/sessions/`. Expected format per line: `{"editor": "...", "model": "...", "tokens_in": N, "tokens_out": N, "cost": N, "timestamp": "...", "duration_s": N}`. This format is compatible with Agentlytics export. If the directory does not exist or contains no data, the panel shows an empty state with instructions on how to configure data collection.
 
 **Rendering:** GPUI native elements (div, text, colored rects for charts). No web view.
 
@@ -276,6 +296,8 @@ New crate: `github_panel` implementing `Panel` trait. Right dock.
 - Polling interval: configurable (default 60s)
 - SQLite cache for offline viewing
 - Notification badge on panel icon
+
+**Error handling:** If GitHub token is expired (401), show "Re-authenticate" prompt with instructions to run `gh auth login`. If API is unreachable, show cached data with "offline" badge and timestamp of last successful fetch. Rate limit (403) triggers automatic backoff with countdown timer shown in panel.
 
 ### 3.7 QMD Knowledge Layer
 
@@ -302,6 +324,8 @@ New crate: `qmd_store` (library, not a panel).
 - Results contextualized: terminal commands replay, SSH notes open connections, files open in editor
 
 **Storage:** `~/.zed-terminal/qmd/` with SQLite + Tantivy index.
+
+**Error handling:** If OpenAI API key is not configured or API is unreachable, QMD falls back to BM25-only search (Tantivy keyword search still works without embeddings). Embedding failures are logged but do not block indexing — documents are indexed for keyword search immediately and embedding is retried on next idle cycle.
 
 ---
 
@@ -347,11 +371,30 @@ New crate: `qmd_store` (library, not a panel).
 
 ## 5. Testing Strategy
 
-- **Compilation gate:** After Phase 1, app must compile and run with all crates removed
-- **Terminal rendering benchmarks:** Measure frame time for 200x120 terminal before/after each optimization
-- **SSH latency benchmarks:** Measure keystroke roundtrip time over SSH on LAN and high-latency networks
+### Phase 1 Smoke Tests (must pass after crate removal)
+- App compiles on Windows, macOS, Linux
+- Window opens and shows terminal in center pane
+- Can type in terminal and see output
+- Can open a file in editor pane
+- Project panel shows file tree
+- Git panel shows status
+- Settings load and persist
+- Extensions load (syntax highlighting works)
+- SSH connection to remote host works
+- Terminal splits work (horizontal, vertical)
+
+### Performance Baselines (capture before any changes)
+- Frame time for 200x120 terminal (idle, scrolling, rapid output)
+- Startup time to first paint (miniprofiler)
+- Memory at rest (1 terminal, 3 terminals, remote terminal)
+- SSH keystroke roundtrip (LAN, high-latency)
+
+### Ongoing
+- **Terminal rendering benchmarks:** Measure frame time before/after each optimization tier
+- **SSH latency benchmarks:** Keystroke roundtrip on LAN and high-latency networks
 - **Startup time measurement:** Use existing miniprofiler/ztracing infrastructure
-- **Panel integration tests:** Each new panel gets a test that verifies Panel trait compliance
+- **Panel integration tests:** Each new panel gets a test verifying Panel trait compliance
+- **Regression:** editor opens files, git UI works, extensions load themes/languages
 
 ---
 
@@ -359,8 +402,30 @@ New crate: `qmd_store` (library, not a panel).
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| Hidden dependencies between removed and kept crates | Medium | High | Compile early, fix incrementally |
+| Hidden dependencies between removed and kept crates | Medium | High | Section 1.5 enumerates known cases (~25 files in 5 crates). Compile after each crate removal batch, not all at once. |
 | GPUI dirty-region tracking requires deep framework changes | Medium | Medium | Start with terminal-level dirty tracking, defer GPUI changes |
 | Windows SSH performance harder to fix than Unix | High | Medium | Connection pool is a workaround, not a fix for Win32-OpenSSH |
-| OpenAI embedding costs for QMD | Low | Low | Embeddings are cheap; batch during idle time |
+| OpenAI embedding costs for QMD | Low | Low | Embeddings are cheap; batch during idle time. BM25 fallback works without API. |
 | GitHub API rate limits | Medium | Low | Cache aggressively, respect rate limit headers |
+| **Upstream Zed divergence** | **High** | **High** | See Section 7 (Fork Maintenance). Limit modifications to init code and new crates where possible. |
+| Extension compatibility after crate removal | Medium | Medium | Extensions primarily depend on language/theme APIs which are kept. Test top 20 extensions after Phase 1. |
+| Data directory conflicts if user also runs stock Zed | Medium | Low | Use `~/.zed-terminal/` (not `~/.zed/`) for all app data. |
+
+---
+
+## 7. Fork Maintenance Strategy
+
+**Upstream tracking:** Track Zed's `main` branch. Merge upstream changes monthly or on significant releases.
+
+**Conflict minimization:**
+- New features live in new crates (ssh_panel, ports_panel, etc.) — no upstream conflicts possible
+- Crate removals are in `Cargo.toml` (easy to re-apply after merge)
+- Init code changes in `main.rs`/`zed.rs` are the primary conflict zone (~50 lines)
+- Performance optimizations in `terminal_element.rs`, `terminal.rs`, `protocol.rs` may conflict with upstream changes — review these carefully on each merge
+
+**Branch strategy:**
+- `main` — the Zed Terminal fork (production)
+- `upstream` — tracks Zed's main via `git remote add upstream`
+- Monthly merge: `git merge upstream/main`, resolve conflicts, run Phase 1 smoke tests
+
+**When to skip upstream merges:** If upstream introduces breaking changes to GPUI rendering pipeline or workspace architecture, evaluate before merging. Terminal rendering optimizations (Tier 2-3) are most likely to conflict.
