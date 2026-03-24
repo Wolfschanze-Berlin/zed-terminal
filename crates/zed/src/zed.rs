@@ -13,7 +13,6 @@ pub mod visual_tests;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows_only_instance;
 
-use agent_ui::{AgentDiffToolbar, AgentPanelDelegate};
 use anyhow::Context as _;
 pub use app_menus::*;
 use assets::Assets;
@@ -21,7 +20,6 @@ use assets::Assets;
 use breadcrumbs::Breadcrumbs;
 use client::zed_urls;
 use collections::VecDeque;
-use debugger_ui::debugger_panel::DebugPanel;
 use editor::{Editor, MultiBuffer};
 use extension_host::ExtensionStore;
 use feature_flags::{FeatureFlagAppExt as _, PanicFeatureFlag};
@@ -40,7 +38,6 @@ use gpui::{
 };
 use image_viewer::ImageInfo;
 use language::Capability;
-use language_onboarding::BasedPyrightBanner;
 use language_tools::lsp_button::{self, LspButton};
 use language_tools::lsp_log_view::LspLogToolbarItemView;
 use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
@@ -49,14 +46,12 @@ use migrator::migrate_keymap;
 use onboarding::DOCS_URL;
 use onboarding::multibuffer_hint::MultibufferHint;
 pub use open_listener::*;
-use outline_panel::OutlinePanel;
 use paths::{
     local_debug_file_relative_path, local_settings_file_relative_path,
     local_tasks_file_relative_path,
 };
-use project::{DirectoryLister, DisableAiSettings, ProjectItem};
+use project::{DirectoryLister, ProjectItem};
 use project_panel::ProjectPanel;
-use prompt_store::PromptBuilder;
 use quick_action_bar::QuickActionBar;
 use recent_projects::open_remote_project;
 use release_channel::{AppCommitSha, AppVersion, ReleaseChannel};
@@ -356,7 +351,6 @@ pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowO
 
 pub fn initialize_workspace(
     app_state: Arc<AppState>,
-    prompt_builder: Arc<PromptBuilder>,
     cx: &mut App,
 ) {
     let mut _on_close_subscription = bind_on_window_closed(cx);
@@ -494,7 +488,7 @@ pub fn initialize_workspace(
             status_bar.add_right_item(image_info, window, cx);
         });
 
-        let panels_task = initialize_panels(prompt_builder.clone(), window, cx);
+        let panels_task = initialize_panels(window, cx);
         workspace.set_panels_task(panels_task);
         register_actions(app_state.clone(), workspace, window, cx);
 
@@ -618,22 +612,13 @@ fn show_software_emulation_warning_if_needed(
 }
 
 fn initialize_panels(
-    prompt_builder: Arc<PromptBuilder>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Task<anyhow::Result<()>> {
     cx.spawn_in(window, async move |workspace_handle, cx| {
         let project_panel = ProjectPanel::load(workspace_handle.clone(), cx.clone());
-        let outline_panel = OutlinePanel::load(workspace_handle.clone(), cx.clone());
         let terminal_panel = TerminalPanel::load(workspace_handle.clone(), cx.clone());
         let git_panel = GitPanel::load(workspace_handle.clone(), cx.clone());
-        let channels_panel =
-            collab_ui::collab_panel::CollabPanel::load(workspace_handle.clone(), cx.clone());
-        let notification_panel = collab_ui::notification_panel::NotificationPanel::load(
-            workspace_handle.clone(),
-            cx.clone(),
-        );
-        let debug_panel = DebugPanel::load(workspace_handle.clone(), cx);
 
         async fn add_panel_when_ready(
             panel_task: impl Future<Output = anyhow::Result<Entity<impl workspace::Panel>>> + 'static,
@@ -652,101 +637,14 @@ fn initialize_panels(
 
         futures::join!(
             add_panel_when_ready(project_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(outline_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(terminal_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(git_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(channels_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(notification_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(debug_panel, workspace_handle.clone(), cx.clone()),
-            initialize_agent_panel(workspace_handle, prompt_builder, cx.clone()).map(|r| r.log_err()),
         );
 
         anyhow::Ok(())
     })
 }
 
-fn setup_or_teardown_ai_panel<P: Panel>(
-    workspace: &mut Workspace,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-    load_panel: impl FnOnce(
-        WeakEntity<Workspace>,
-        AsyncWindowContext,
-    ) -> Task<anyhow::Result<Entity<P>>>
-    + 'static,
-) -> Task<anyhow::Result<()>> {
-    let disable_ai = SettingsStore::global(cx)
-        .get::<DisableAiSettings>(None)
-        .disable_ai
-        || cfg!(test);
-    let existing_panel = workspace.panel::<P>(cx);
-    match (disable_ai, existing_panel) {
-        (false, None) => cx.spawn_in(window, async move |workspace, cx| {
-            let panel = load_panel(workspace.clone(), cx.clone()).await?;
-            workspace.update_in(cx, |workspace, window, cx| {
-                let disable_ai = SettingsStore::global(cx)
-                    .get::<DisableAiSettings>(None)
-                    .disable_ai;
-                let have_panel = workspace.panel::<P>(cx).is_some();
-                if !disable_ai && !have_panel {
-                    workspace.add_panel(panel, window, cx);
-                }
-            })
-        }),
-        (true, Some(existing_panel)) => {
-            workspace.remove_panel::<P>(&existing_panel, window, cx);
-            Task::ready(Ok(()))
-        }
-        _ => Task::ready(Ok(())),
-    }
-}
-
-async fn initialize_agent_panel(
-    workspace_handle: WeakEntity<Workspace>,
-    prompt_builder: Arc<PromptBuilder>,
-    mut cx: AsyncWindowContext,
-) -> anyhow::Result<()> {
-    workspace_handle
-        .update_in(&mut cx, |workspace, window, cx| {
-            let prompt_builder = prompt_builder.clone();
-            setup_or_teardown_ai_panel(workspace, window, cx, move |workspace, cx| {
-                agent_ui::AgentPanel::load(workspace, prompt_builder, cx)
-            })
-        })?
-        .await?;
-
-    workspace_handle.update_in(&mut cx, |workspace, window, cx| {
-        let prompt_builder = prompt_builder.clone();
-        cx.observe_global_in::<SettingsStore>(window, move |workspace, window, cx| {
-            let prompt_builder = prompt_builder.clone();
-            setup_or_teardown_ai_panel(workspace, window, cx, move |workspace, cx| {
-                agent_ui::AgentPanel::load(workspace, prompt_builder, cx)
-            })
-            .detach_and_log_err(cx);
-        })
-        .detach();
-
-        // Register the actions that are shared between `assistant` and `assistant2`.
-        //
-        // We need to do this here instead of within the individual `init`
-        // functions so that we only register the actions once.
-        //
-        // Once we ship `assistant2` we can push this back down into `agent::agent_panel::init`.
-        if !cfg!(test) {
-            <dyn AgentPanelDelegate>::set_global(
-                Arc::new(agent_ui::ConcreteAssistantPanelDelegate),
-                cx,
-            );
-
-            workspace
-                .register_action(agent_ui::AgentPanel::toggle_focus)
-                .register_action(agent_ui::AgentPanel::toggle)
-                .register_action(agent_ui::InlineAssistant::inline_assist);
-        }
-    })?;
-
-    anyhow::Ok(())
-}
 
 fn register_actions(
     app_state: Arc<AppState>,
@@ -1009,32 +907,6 @@ fn register_actions(
         )
         .register_action(
             |workspace: &mut Workspace,
-             _: &outline_panel::ToggleFocus,
-             window: &mut Window,
-             cx: &mut Context<Workspace>| {
-                workspace.toggle_panel_focus::<OutlinePanel>(window, cx);
-            },
-        )
-        .register_action(
-            |workspace: &mut Workspace,
-             _: &collab_ui::collab_panel::ToggleFocus,
-             window: &mut Window,
-             cx: &mut Context<Workspace>| {
-                workspace.toggle_panel_focus::<collab_ui::collab_panel::CollabPanel>(window, cx);
-            },
-        )
-        .register_action(
-            |workspace: &mut Workspace,
-             _: &collab_ui::notification_panel::ToggleFocus,
-             window: &mut Window,
-             cx: &mut Context<Workspace>| {
-                workspace.toggle_panel_focus::<collab_ui::notification_panel::NotificationPanel>(
-                    window, cx,
-                );
-            },
-        )
-        .register_action(
-            |workspace: &mut Workspace,
              _: &terminal_panel::ToggleFocus,
              window: &mut Window,
              cx: &mut Context<Workspace>| {
@@ -1230,10 +1102,6 @@ fn initialize_pane(
             toolbar.add_item(branch_diff_toolbar, window, cx);
             let commit_view_toolbar = cx.new(|_| CommitViewToolbar::new());
             toolbar.add_item(commit_view_toolbar, window, cx);
-            let agent_diff_toolbar = cx.new(AgentDiffToolbar::new);
-            toolbar.add_item(agent_diff_toolbar, window, cx);
-            let basedpyright_banner = cx.new(|cx| BasedPyrightBanner::new(workspace, cx));
-            toolbar.add_item(basedpyright_banner, window, cx);
             let image_view_toolbar = cx.new(|_| image_viewer::ImageViewToolbarControls::new());
             toolbar.add_item(image_view_toolbar, window, cx);
         })
@@ -5005,55 +4873,18 @@ mod tests {
 
             gpui_tokio::init(cx);
             theme::init(theme::LoadThemes::JustBase, cx);
-            audio::init(cx);
-            channel::init(&app_state.client, app_state.user_store.clone(), cx);
-            call::init(app_state.client.clone(), app_state.user_store.clone(), cx);
-            notifications::init(app_state.client.clone(), app_state.user_store.clone(), cx);
             workspace::init(app_state.clone(), cx);
             release_channel::init(Version::new(0, 0, 0), cx);
             command_palette::init(cx);
             editor::init(cx);
-            collab_ui::init(&app_state, cx);
             git_ui::init(cx);
             project_panel::init(cx);
             outline_panel::init(cx);
             terminal_view::init(cx);
-            copilot_chat::init(
-                app_state.fs.clone(),
-                app_state.client.http_client(),
-                copilot_chat::CopilotChatConfiguration::default(),
-                cx,
-            );
             image_viewer::init(cx);
-            language_model::init(app_state.user_store.clone(), app_state.client.clone(), cx);
-            language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
-            web_search::init(cx);
             git_graph::init(cx);
-            web_search_providers::init(app_state.client.clone(), app_state.user_store.clone(), cx);
-            let prompt_builder = PromptBuilder::load(app_state.fs.clone(), false, cx);
-            project::AgentRegistryStore::init_global(
-                cx,
-                app_state.fs.clone(),
-                app_state.client.http_client(),
-            );
-            agent_ui::init(
-                app_state.fs.clone(),
-                app_state.client.clone(),
-                prompt_builder.clone(),
-                app_state.languages.clone(),
-                false,
-                cx,
-            );
-
-            repl::init(app_state.fs.clone(), cx);
-            repl::notebook::init(cx);
             tasks_ui::init(cx);
-            project::debugger::breakpoint_store::BreakpointStore::init(
-                &app_state.client.clone().into(),
-            );
-            project::debugger::dap_store::DapStore::init(&app_state.client.clone().into(), cx);
-            debugger_ui::init(cx);
-            initialize_workspace(app_state.clone(), prompt_builder, cx);
+            initialize_workspace(app_state.clone(), cx);
             search::init(cx);
             cx.set_global(workspace::PaneSearchBarCallbacks {
                 setup_search_bar: |languages, toolbar, window, cx| {
