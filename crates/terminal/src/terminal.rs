@@ -339,7 +339,7 @@ impl Display for TerminalError {
 }
 
 // https://github.com/alacritty/alacritty/blob/cb3a79dbf6472740daca8440d5166c1d4af5029e/extra/man/alacritty.5.scd?plain=1#L207-L213
-const DEFAULT_SCROLL_HISTORY_LINES: usize = 10_000;
+const DEFAULT_SCROLL_HISTORY_LINES: usize = 5_000;
 pub const MAX_SCROLL_HISTORY_LINES: usize = 100_000;
 
 pub struct TerminalBuilder {
