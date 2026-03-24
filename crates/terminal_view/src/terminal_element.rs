@@ -96,7 +96,7 @@ impl BatchedTextRun {
         style: TextRun,
         font_size: AbsoluteLength,
     ) -> Self {
-        let mut text = String::with_capacity(100); // Pre-allocate for typical line length
+        let mut text = String::with_capacity(256); // Pre-allocate for typical line length
         text.push(c);
         BatchedTextRun {
             start_point,
@@ -248,31 +248,27 @@ impl BackgroundRegion {
 }
 
 /// Merge background regions to minimize the number of rectangles
-fn merge_background_regions(regions: Vec<BackgroundRegion>) -> Vec<BackgroundRegion> {
-    if regions.is_empty() {
+fn merge_background_regions(mut regions: Vec<BackgroundRegion>) -> Vec<BackgroundRegion> {
+    if regions.len() <= 1 {
         return regions;
     }
 
-    let mut merged = regions;
-    let mut changed = true;
+    // Sort by start position for single-pass merging
+    regions.sort_unstable_by(|a, b| {
+        a.start_line
+            .cmp(&b.start_line)
+            .then(a.start_col.cmp(&b.start_col))
+    });
 
-    // Keep merging until no more merges are possible
-    while changed {
-        changed = false;
-        let mut i = 0;
+    let mut merged: Vec<BackgroundRegion> = Vec::with_capacity(regions.len());
+    merged.push(regions[0].clone());
 
-        while i < merged.len() {
-            let mut j = i + 1;
-            while j < merged.len() {
-                if merged[i].can_merge_with(&merged[j]) {
-                    let other = merged.remove(j);
-                    merged[i].merge_with(&other);
-                    changed = true;
-                } else {
-                    j += 1;
-                }
-            }
-            i += 1;
+    for region in regions.into_iter().skip(1) {
+        let last = merged.last_mut().expect("merged is non-empty");
+        if last.can_merge_with(&region) {
+            last.merge_with(&region);
+        } else {
+            merged.push(region);
         }
     }
 
