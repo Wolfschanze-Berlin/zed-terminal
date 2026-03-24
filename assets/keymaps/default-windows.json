@@ -1210,6 +1210,13 @@
       "alt-t": "terminal::RerunTask",
       "ctrl-shift-5": "pane::SplitRight",
       "ctrl-shift-.": "agent::AddSelectionToThread",
+      // tmux-style split and navigation bindings (ctrl-b as prefix)
+      "ctrl-b d": "pane::SplitDown",
+      "ctrl-b shift-d": "pane::SplitRight",
+      "ctrl-b up": "workspace::ActivatePaneUp",
+      "ctrl-b down": "workspace::ActivatePaneDown",
+      "ctrl-b left": "workspace::ActivatePaneLeft",
+      "ctrl-b right": "workspace::ActivatePaneRight",
     },
   },
   {
