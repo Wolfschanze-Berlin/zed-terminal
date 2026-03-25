@@ -1,11 +1,16 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use collections::HashSet;
 use gpui::{
     Action, App, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
     Subscription, WeakEntity, actions,
 };
+use remote::{RemoteConnectionOptions, SshConnectionOptions};
 use ui::prelude::*;
 use ui::Tooltip;
 use workspace::{
-    Workspace,
+    AppState, OpenOptions, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
 };
 
@@ -29,22 +34,27 @@ struct SshHost {
     name: String,
     hostname: Option<String>,
     user: Option<String>,
+    port: Option<u16>,
 }
 
 pub struct SshPanel {
     focus_handle: FocusHandle,
     width: Option<Pixels>,
     hosts: Vec<SshHost>,
+    connected_hosts: HashSet<String>,
+    workspace: WeakEntity<Workspace>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl SshPanel {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(workspace: WeakEntity<Workspace>, cx: &mut Context<Self>) -> Self {
         let hosts = Self::load_ssh_hosts();
         Self {
             focus_handle: cx.focus_handle(),
             width: None,
             hosts,
+            connected_hosts: HashSet::default(),
+            workspace,
             _subscriptions: Vec::new(),
         }
     }
@@ -53,8 +63,9 @@ impl SshPanel {
         workspace: WeakEntity<Workspace>,
         mut cx: AsyncWindowContext,
     ) -> anyhow::Result<Entity<Self>> {
+        let workspace_weak = workspace.clone();
         workspace.update_in(&mut cx, |_workspace, _window, cx| {
-            cx.new(|cx| Self::new(cx))
+            cx.new(|cx| Self::new(workspace_weak, cx))
         })
     }
 
@@ -75,8 +86,78 @@ impl SshPanel {
         cx.notify();
     }
 
-    fn connect_to_host(&mut self, host_name: &str, _window: &mut Window, _cx: &mut Context<Self>) {
-        log::info!("SSH connect requested for host: {}", host_name);
+    fn connect_to_host(&mut self, host_index: usize, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(host) = self.hosts.get(host_index) else {
+            return;
+        };
+
+        let hostname = host
+            .hostname
+            .clone()
+            .unwrap_or_else(|| host.name.clone());
+
+        let connection_options = SshConnectionOptions {
+            host: hostname.into(),
+            username: host.user.clone(),
+            port: host.port,
+            ..Default::default()
+        };
+
+        let host_name = host.name.clone();
+        let remote_options = RemoteConnectionOptions::Ssh(connection_options);
+
+        let app_state = match self.workspace.read_with(cx, |workspace, _cx| {
+            workspace.app_state().clone()
+        }) {
+            Ok(state) => state,
+            Err(error) => {
+                log::error!("SSH panel: workspace no longer available: {}", error);
+                return;
+            }
+        };
+
+        self.connected_hosts.insert(host_name.clone());
+        cx.notify();
+
+        Self::open_ssh_connection(remote_options, app_state, host_name, cx);
+    }
+
+    fn open_ssh_connection(
+        connection_options: RemoteConnectionOptions,
+        app_state: Arc<AppState>,
+        host_name: String,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let open_options = OpenOptions::default();
+            let paths: Vec<PathBuf> = vec![];
+
+            let result = recent_projects::open_remote_project(
+                connection_options,
+                paths,
+                app_state,
+                open_options,
+                cx,
+            )
+            .await;
+
+            if let Err(error) = &result {
+                log::error!(
+                    "SSH connection failed for host {}: {:?}",
+                    host_name,
+                    error
+                );
+                if let Err(update_error) = this.update(cx, |this, cx| {
+                    this.connected_hosts.remove(&host_name);
+                    cx.notify();
+                }) {
+                    log::warn!("Failed to update SSH panel state: {}", update_error);
+                }
+            }
+
+            result
+        })
+        .detach_and_log_err(cx);
     }
 
 }
@@ -86,6 +167,7 @@ fn parse_ssh_config(content: &str) -> Vec<SshHost> {
     let mut current_names: Vec<String> = Vec::new();
     let mut current_hostname: Option<String> = None;
     let mut current_user: Option<String> = None;
+    let mut current_port: Option<u16> = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -106,11 +188,13 @@ fn parse_ssh_config(content: &str) -> Vec<SshHost> {
                         name,
                         hostname: current_hostname.clone(),
                         user: current_user.clone(),
+                        port: current_port,
                     });
                 }
             }
             current_hostname = None;
             current_user = None;
+            current_port = None;
             current_names = value
                 .split_whitespace()
                 .filter(|h| !h.contains('*') && !h.starts_with('!'))
@@ -120,6 +204,8 @@ fn parse_ssh_config(content: &str) -> Vec<SshHost> {
             current_hostname = Some(value.to_string());
         } else if keyword.eq_ignore_ascii_case("User") {
             current_user = Some(value.to_string());
+        } else if keyword.eq_ignore_ascii_case("Port") {
+            current_port = value.parse().ok();
         }
     }
 
@@ -129,6 +215,7 @@ fn parse_ssh_config(content: &str) -> Vec<SshHost> {
                 name,
                 hostname: current_hostname.clone(),
                 user: current_user.clone(),
+                port: current_port,
             });
         }
     }
@@ -193,7 +280,6 @@ impl Render for SshPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors();
 
-        // Build header
         let header = h_flex()
             .w_full()
             .px_3()
@@ -215,7 +301,6 @@ impl Render for SshPanel {
                     })),
             );
 
-        // Build body
         let body = if self.hosts.is_empty() {
             v_flex().child(
                 div()
@@ -227,7 +312,7 @@ impl Render for SshPanel {
             let mut list = v_flex().gap_0p5().py_1();
             for (index, host) in self.hosts.iter().enumerate() {
                 let host_name: SharedString = host.name.clone().into();
-                let host_name_for_click = host.name.clone();
+                let is_connected = self.connected_hosts.contains(&host.name);
 
                 let subtitle = match (&host.user, &host.hostname) {
                     (Some(user), Some(hostname)) => Some(format!("{}@{}", user, hostname)),
@@ -236,17 +321,17 @@ impl Render for SshPanel {
                     (None, None) => None,
                 };
 
-                let entry = div()
-                    .id(("ssh-host", index))
-                    .w_full()
-                    .px_3()
-                    .py_1()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(colors.ghost_element_hover))
-                    .active(|style| style.bg(colors.ghost_element_active))
-                    .on_click(cx.listener(move |this, _event, window, cx| {
-                        this.connect_to_host(&host_name_for_click, window, cx);
-                    }))
+                let status_indicator = div()
+                    .w(px(8.))
+                    .h(px(8.))
+                    .rounded_full()
+                    .when(is_connected, |el| el.bg(Color::Success.color(cx)))
+                    .when(!is_connected, |el| el.bg(colors.border));
+
+                let host_label = h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(status_indicator)
                     .child(
                         v_flex()
                             .child(Label::new(host_name).size(LabelSize::Default))
@@ -258,6 +343,36 @@ impl Render for SshPanel {
                                 )
                             }),
                     );
+
+                let mut entry = div()
+                    .id(("ssh-host", index))
+                    .w_full()
+                    .px_3()
+                    .py_1()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(colors.ghost_element_hover))
+                    .active(|style| style.bg(colors.ghost_element_active))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .justify_between()
+                            .items_center()
+                            .child(host_label),
+                    );
+
+                if is_connected {
+                    entry = entry.child(
+                        h_flex().child(
+                            Label::new("Connected")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Success),
+                        ),
+                    );
+                } else {
+                    entry = entry.on_click(cx.listener(move |this, _event, window, cx| {
+                        this.connect_to_host(index, window, cx);
+                    }));
+                }
 
                 list = list.child(entry);
             }
