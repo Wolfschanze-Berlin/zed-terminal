@@ -204,11 +204,10 @@ async fn build_remote_server_from_source(
         }
     }
 
-    // Default to "never" — use pre-built remote server binaries instead of
-    // cross-compiling from source (which requires zig).
-    // Set ZED_BUILD_REMOTE_SERVER=nocompress to build from source.
+    // Build remote server from source without compression by default.
+    // Requires zig for cross-compilation (install via: winget install zig.zig).
     let build_remote_server =
-        std::env::var("ZED_BUILD_REMOTE_SERVER").unwrap_or("never".into());
+        std::env::var("ZED_BUILD_REMOTE_SERVER").unwrap_or("nocompress".into());
 
     if let "never" = &*build_remote_server {
         return Ok(None);
