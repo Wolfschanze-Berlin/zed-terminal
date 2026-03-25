@@ -1,4 +1,3 @@
-use feature_flags::{AgentV2FeatureFlag, FeatureFlagAppExt as _};
 use gpui::{Action as _, App};
 use itertools::Itertools as _;
 use settings::{
@@ -12,10 +11,7 @@ use ui::IntoElement;
 use crate::{
     ActionLink, DynamicItem, PROJECT, SettingField, SettingItem, SettingsFieldMetadata,
     SettingsPage, SettingsPageItem, SubPageLink, USER, active_language, all_language_names,
-    pages::{
-        open_audio_test_window, render_edit_prediction_setup_page,
-        render_tool_permissions_setup_page,
-    },
+    pages::{open_audio_test_window, render_edit_prediction_setup_page},
 };
 
 const DEFAULT_STRING: String = String::new();
@@ -75,7 +71,7 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
         terminal_page(),
         version_control_page(),
         collaboration_page(),
-        ai_page(cx),
+        ai_page(),
         network_page(),
     ]
 }
@@ -971,50 +967,6 @@ fn appearance_page() -> SettingsPage {
         ]
     }
 
-    fn agent_panel_font_section() -> [SettingsPageItem; 3] {
-        [
-            SettingsPageItem::SectionHeader("Agent Panel Font"),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "UI Font Size",
-                description: "Font size for agent response text in the agent panel. Falls back to the regular UI font size.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent_ui_font_size"),
-                    pick: |settings_content| {
-                        settings_content
-                            .theme
-                            .agent_ui_font_size
-                            .as_ref()
-                            .or(settings_content.theme.ui_font_size.as_ref())
-                    },
-                    write: |settings_content, value| {
-                        settings_content.theme.agent_ui_font_size = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Buffer Font Size",
-                description: "Font size for user messages text in the agent panel.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent_buffer_font_size"),
-                    pick: |settings_content| {
-                        settings_content
-                            .theme
-                            .agent_buffer_font_size
-                            .as_ref()
-                            .or(settings_content.theme.buffer_font_size.as_ref())
-                    },
-                    write: |settings_content, value| {
-                        settings_content.theme.agent_buffer_font_size = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-        ]
-    }
-
     fn text_rendering_section() -> [SettingsPageItem; 2] {
         [
             SettingsPageItem::SectionHeader("Text Rendering"),
@@ -1230,7 +1182,6 @@ fn appearance_page() -> SettingsPage {
         theme_section(),
         buffer_font_section(),
         ui_font_section(),
-        agent_panel_font_section(),
         text_rendering_section(),
         cursor_section(),
         highlighting_section(),
@@ -2311,7 +2262,7 @@ fn editor_page() -> SettingsPage {
         ]
     }
 
-    fn toolbar_section() -> [SettingsPageItem; 6] {
+    fn toolbar_section() -> [SettingsPageItem; 5] {
         [
             SettingsPageItem::SectionHeader("Toolbar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -2381,30 +2332,6 @@ fn editor_page() -> SettingsPage {
                             .toolbar
                             .get_or_insert_default()
                             .selections_menu = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Agent Review",
-                description: "Show agent review buttons in the editor toolbar.",
-                field: Box::new(SettingField {
-                    json_path: Some("toolbar.agent_review"),
-                    pick: |settings_content| {
-                        settings_content
-                            .editor
-                            .toolbar
-                            .as_ref()?
-                            .agent_review
-                            .as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content
-                            .editor
-                            .toolbar
-                            .get_or_insert_default()
-                            .agent_review = value;
                     },
                 }),
                 metadata: None,
@@ -5612,71 +5539,6 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn agent_panel_section() -> [SettingsPageItem; 5] {
-        [
-            SettingsPageItem::SectionHeader("Agent Panel"),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Agent Panel Button",
-                description: "Whether to show the agent panel button in the status bar.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.button"),
-                    pick: |settings_content| settings_content.agent.as_ref()?.button.as_ref(),
-                    write: |settings_content, value| {
-                        settings_content.agent.get_or_insert_default().button = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Agent Panel Dock",
-                description: "Where to dock the agent panel.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.dock"),
-                    pick: |settings_content| settings_content.agent.as_ref()?.dock.as_ref(),
-                    write: |settings_content, value| {
-                        settings_content.agent.get_or_insert_default().dock = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Agent Panel Default Width",
-                description: "Default width when the agent panel is docked to the left or right.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.default_width"),
-                    pick: |settings_content| {
-                        settings_content.agent.as_ref()?.default_width.as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content.agent.get_or_insert_default().default_width = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Agent Panel Default Height",
-                description: "Default height when the agent panel is docked to the bottom.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.default_height"),
-                    pick: |settings_content| {
-                        settings_content.agent.as_ref()?.default_height.as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content
-                            .agent
-                            .get_or_insert_default()
-                            .default_height = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-        ]
-    }
-
     SettingsPage {
         title: "Panels",
         items: concat_sections![
@@ -5688,7 +5550,6 @@ fn panels_page() -> SettingsPage {
             debugger_panel_section(),
             notification_panel_section(),
             collaboration_panel_section(),
-            agent_panel_section(),
         ],
     }
 }
@@ -7104,7 +6965,7 @@ fn collaboration_page() -> SettingsPage {
     }
 }
 
-fn ai_page(cx: &App) -> SettingsPage {
+fn ai_page() -> SettingsPage {
     fn general_section() -> [SettingsPageItem; 2] {
         [
             SettingsPageItem::SectionHeader("General"),
@@ -7122,255 +6983,6 @@ fn ai_page(cx: &App) -> SettingsPage {
                 files: USER | PROJECT,
             }),
         ]
-    }
-
-    fn agent_configuration_section(cx: &App) -> Box<[SettingsPageItem]> {
-        let mut items = vec![
-            SettingsPageItem::SectionHeader("Agent Configuration"),
-            SettingsPageItem::SubPageLink(SubPageLink {
-                title: "Tool Permissions".into(),
-                r#type: Default::default(),
-                json_path: Some("agent.tool_permissions"),
-                description: Some("Set up regex patterns to auto-allow, auto-deny, or always request confirmation, for specific tool inputs.".into()),
-                in_json: true,
-                files: USER,
-                render: render_tool_permissions_setup_page,
-            }),
-        ];
-
-        if cx.has_flag::<AgentV2FeatureFlag>() {
-            items.push(SettingsPageItem::SettingItem(SettingItem {
-                title: "New Thread Location",
-                description: "Whether to start a new thread in the current local project or in a new Git worktree.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.new_thread_location"),
-                    pick: |settings_content| {
-                        settings_content
-                            .agent
-                            .as_ref()?
-                            .new_thread_location
-                            .as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content
-                            .agent
-                            .get_or_insert_default()
-                            .new_thread_location = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }));
-        }
-
-        items.extend([
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Single File Review",
-                description: "When enabled, agent edits will also be displayed in single-file buffers for review.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.single_file_review"),
-                    pick: |settings_content| {
-                        settings_content.agent.as_ref()?.single_file_review.as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content
-                            .agent
-                            .get_or_insert_default()
-                            .single_file_review = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Enable Feedback",
-                description: "Show voting thumbs up/down icon buttons for feedback on agent edits.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.enable_feedback"),
-                    pick: |settings_content| {
-                        settings_content.agent.as_ref()?.enable_feedback.as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content
-                            .agent
-                            .get_or_insert_default()
-                            .enable_feedback = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Notify When Agent Waiting",
-                description: "Where to show notifications when the agent has completed its response or needs confirmation before running a tool action.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.notify_when_agent_waiting"),
-                    pick: |settings_content| {
-                        settings_content
-                            .agent
-                            .as_ref()?
-                            .notify_when_agent_waiting
-                            .as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content
-                            .agent
-                            .get_or_insert_default()
-                            .notify_when_agent_waiting = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Play Sound When Agent Done",
-                description: "Whether to play a sound when the agent has either completed its response, or needs user input.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.play_sound_when_agent_done"),
-                    pick: |settings_content| {
-                        settings_content
-                            .agent
-                            .as_ref()?
-                            .play_sound_when_agent_done
-                            .as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content
-                            .agent
-                            .get_or_insert_default()
-                            .play_sound_when_agent_done = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Expand Edit Card",
-                description: "Whether to have edit cards in the agent panel expanded, showing a Preview of the diff.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.expand_edit_card"),
-                    pick: |settings_content| {
-                        settings_content.agent.as_ref()?.expand_edit_card.as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content
-                            .agent
-                            .get_or_insert_default()
-                            .expand_edit_card = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Expand Terminal Card",
-                description: "Whether to have terminal cards in the agent panel expanded, showing the whole command output.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.expand_terminal_card"),
-                    pick: |settings_content| {
-                        settings_content
-                            .agent
-                            .as_ref()?
-                            .expand_terminal_card
-                            .as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content
-                            .agent
-                            .get_or_insert_default()
-                            .expand_terminal_card = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Cancel Generation On Terminal Stop",
-                description: "Whether clicking the stop button on a running terminal tool should also cancel the agent's generation. Note that this only applies to the stop button, not to ctrl+c inside the terminal.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.cancel_generation_on_terminal_stop"),
-                    pick: |settings_content| {
-                        settings_content
-                            .agent
-                            .as_ref()?
-                            .cancel_generation_on_terminal_stop
-                            .as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content
-                            .agent
-                            .get_or_insert_default()
-                            .cancel_generation_on_terminal_stop = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Use Modifier To Send",
-                description: "Whether to always use cmd-enter (or ctrl-enter on Linux or Windows) to send messages.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.use_modifier_to_send"),
-                    pick: |settings_content| {
-                        settings_content
-                            .agent
-                            .as_ref()?
-                            .use_modifier_to_send
-                            .as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content
-                            .agent
-                            .get_or_insert_default()
-                            .use_modifier_to_send = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Message Editor Min Lines",
-                description: "Minimum number of lines to display in the agent message editor.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.message_editor_min_lines"),
-                    pick: |settings_content| {
-                        settings_content
-                            .agent
-                            .as_ref()?
-                            .message_editor_min_lines
-                            .as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content
-                            .agent
-                            .get_or_insert_default()
-                            .message_editor_min_lines = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Show Turn Stats",
-                description: "Whether to show turn statistics like elapsed time during generation and final turn duration.",
-                field: Box::new(SettingField {
-                    json_path: Some("agent.show_turn_stats"),
-                    pick: |settings_content| {
-                        settings_content.agent.as_ref()?.show_turn_stats.as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content
-                            .agent
-                            .get_or_insert_default()
-                            .show_turn_stats = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-        ]);
-
-        items.into_boxed_slice()
     }
 
     fn context_servers_section() -> [SettingsPageItem; 2] {
@@ -7455,7 +7067,6 @@ fn ai_page(cx: &App) -> SettingsPage {
         title: "AI",
         items: concat_sections![
             general_section(),
-            agent_configuration_section(cx),
             context_servers_section(),
             edit_prediction_language_settings_section(),
             edit_prediction_display_sub_section()
