@@ -185,13 +185,6 @@
     },
   },
   {
-    "context": "Editor && jupyter && !ContextEditor",
-    "bindings": {
-      "ctrl-shift-enter": "repl::Run",
-      "ctrl-alt-enter": "repl::RunInPlace",
-    },
-  },
-  {
     "context": "Editor && !agent_diff",
     "bindings": {
       "ctrl-k ctrl-r": "git::Restore",
@@ -834,12 +827,6 @@
     },
   },
   {
-    "context": "!Terminal",
-    "bindings": {
-      "ctrl-shift-c": "collab_panel::ToggleFocus",
-    },
-  },
-  {
     "context": "!ContextEditor && !AcpThread > Editor && mode == full",
     "bindings": {
       "alt-enter": "editor::OpenExcerpts",
@@ -1059,33 +1046,6 @@
     },
   },
   {
-    "context": "CollabPanel && not_editing",
-    "bindings": {
-      "ctrl-backspace": "collab_panel::Remove",
-      "space": "menu::Confirm",
-    },
-  },
-  {
-    "context": "CollabPanel",
-    "bindings": {
-      "alt-up": "collab_panel::MoveChannelUp",
-      "alt-down": "collab_panel::MoveChannelDown",
-      "alt-enter": "collab_panel::OpenSelectedChannelNotes",
-    },
-  },
-  {
-    "context": "(CollabPanel && editing) > Editor",
-    "bindings": {
-      "space": "collab_panel::InsertSpace",
-    },
-  },
-  {
-    "context": "ChannelModal",
-    "bindings": {
-      "tab": "channel_modal::ToggleMode",
-    },
-  },
-  {
     "context": "Picker > Editor",
     "bindings": {
       "escape": "menu::Cancel",
@@ -1093,12 +1053,6 @@
       "down": "menu::SelectNext",
       "tab": "picker::ConfirmCompletion",
       "alt-enter": ["picker::ConfirmInput", { "secondary": false }],
-    },
-  },
-  {
-    "context": "ChannelModal > Picker > Editor",
-    "bindings": {
-      "tab": "channel_modal::ToggleMode",
     },
   },
   {
@@ -1409,35 +1363,6 @@
     "bindings": {
       "alt-left": "dev::EditPredictionContextGoBack",
       "alt-right": "dev::EditPredictionContextGoForward",
-    },
-  },
-  {
-    "context": "NotebookEditor",
-    "bindings": {
-      "shift-enter": "notebook::Run",
-      "ctrl-enter": "notebook::Run",
-      "ctrl-shift-enter": "notebook::RunAll",
-      "alt-up": "notebook::MoveCellUp",
-      "alt-down": "notebook::MoveCellDown",
-      "ctrl-m": "notebook::AddCodeBlock",
-      "ctrl-shift-m": "notebook::AddMarkdownBlock",
-      "ctrl-shift-r": "notebook::RestartKernel",
-      "ctrl-c": "notebook::InterruptKernel",
-    },
-  },
-  {
-    "context": "NotebookEditor > Editor",
-    "bindings": {
-      "enter": "editor::Newline",
-      "shift-enter": "notebook::Run",
-      "ctrl-enter": "notebook::Run",
-      "ctrl-shift-enter": "notebook::RunAll",
-      "alt-up": "notebook::MoveCellUp",
-      "alt-down": "notebook::MoveCellDown",
-      "ctrl-m": "notebook::AddCodeBlock",
-      "ctrl-shift-m": "notebook::AddMarkdownBlock",
-      "ctrl-shift-r": "notebook::RestartKernel",
-      "ctrl-c": "notebook::InterruptKernel",
     },
   },
   {

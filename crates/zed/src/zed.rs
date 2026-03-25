@@ -1692,18 +1692,26 @@ pub fn load_default_keymap(cx: &mut App) {
         return;
     }
 
-    cx.bind_keys(
-        KeymapFile::load_asset(DEFAULT_KEYMAP_PATH, Some(KeybindSource::Default), cx).unwrap(),
-    );
+    if let Some(key_bindings) =
+        KeymapFile::load_asset(DEFAULT_KEYMAP_PATH, Some(KeybindSource::Default), cx).log_err()
+    {
+        cx.bind_keys(key_bindings);
+    }
 
     if let Some(asset_path) = base_keymap.asset_path() {
-        cx.bind_keys(KeymapFile::load_asset(asset_path, Some(KeybindSource::Base), cx).unwrap());
+        if let Some(key_bindings) =
+            KeymapFile::load_asset(asset_path, Some(KeybindSource::Base), cx).log_err()
+        {
+            cx.bind_keys(key_bindings);
+        }
     }
 
     if VimModeSetting::get_global(cx).0 || vim_mode_setting::HelixModeSetting::get_global(cx).0 {
-        cx.bind_keys(
-            KeymapFile::load_asset(VIM_KEYMAP_PATH, Some(KeybindSource::Vim), cx).unwrap(),
-        );
+        if let Some(key_bindings) =
+            KeymapFile::load_asset(VIM_KEYMAP_PATH, Some(KeybindSource::Vim), cx).log_err()
+        {
+            cx.bind_keys(key_bindings);
+        }
     }
 }
 
