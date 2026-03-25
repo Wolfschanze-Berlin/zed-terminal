@@ -19,7 +19,7 @@ use itertools::Itertools;
 use project::{Fs, Project};
 
 use settings::{Settings, TerminalDockPosition};
-use task::{RevealStrategy, RevealTarget, Shell, ShellBuilder, SpawnInTerminal, TaskId};
+use task::{HideStrategy, RevealStrategy, RevealTarget, SaveStrategy, Shell, ShellBuilder, SpawnInTerminal, TaskId};
 use terminal::{Terminal, terminal_settings::TerminalSettings};
 use ui::{
     ButtonLike, Clickable, ContextMenu, FluentBuilder, PopoverMenu, SplitButton, Toggleable,
@@ -824,6 +824,37 @@ impl TerminalPanel {
             })?;
             result
         })
+    }
+
+    pub fn spawn_ssh_terminal(
+        &mut self,
+        ssh_args: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let label = format!("ssh {}", ssh_args.join(" "));
+        let task = SpawnInTerminal {
+            id: TaskId(label.clone()),
+            full_label: label.clone(),
+            label: label.clone(),
+            command: Some("ssh".to_string()),
+            args: ssh_args,
+            command_label: label,
+            cwd: None,
+            env: Default::default(),
+            use_new_terminal: true,
+            allow_concurrent_runs: true,
+            reveal: RevealStrategy::Always,
+            reveal_target: RevealTarget::Center,
+            hide: HideStrategy::Never,
+            shell: Shell::System,
+            show_summary: false,
+            show_command: false,
+            show_rerun: false,
+            save: SaveStrategy::None,
+        };
+        self.add_terminal_task(task, RevealStrategy::Always, window, cx)
+            .detach_and_log_err(cx);
     }
 
     fn add_terminal_shell(
