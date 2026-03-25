@@ -88,6 +88,7 @@ members = [
     "crates/outline",
     "crates/panel",
     "crates/paths",
+    "crates/ports_panel",
     "crates/picker",
     "crates/platform_title_bar",
     "crates/prettier",
@@ -118,6 +119,7 @@ members = [
     "crates/shell_command_parser",
     "crates/sidebar",
     "crates/snippet",
+    "crates/ssh_panel",
     "crates/snippet_provider",
     "crates/snippets_ui",
     "crates/sqlez",
@@ -321,6 +323,7 @@ outline = { path = "crates/outline" }
 outline_panel = { path = "crates/outline_panel" }
 panel = { path = "crates/panel" }
 paths = { path = "crates/paths" }
+ports_panel = { path = "crates/ports_panel" }
 perf = { path = "tooling/perf" }
 picker = { path = "crates/picker" }
 prettier = { path = "crates/prettier" }
@@ -347,6 +350,7 @@ search = { path = "crates/search" }
 session = { path = "crates/session" }
 sidebar = { path = "crates/sidebar" }
 settings = { path = "crates/settings" }
+ssh_panel = { path = "crates/ssh_panel" }
 settings_content = { path = "crates/settings_content" }
 settings_json = { path = "crates/settings_json" }
 settings_macros = { path = "crates/settings_macros" }

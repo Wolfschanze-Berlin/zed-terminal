@@ -1,0 +1,21 @@
+[package]
+name = "ssh_panel"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+name = "ssh_panel"
+path = "src/ssh_panel.rs"
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+ui.workspace = true
+workspace.workspace = true
+settings.workspace = true
+serde.workspace = true

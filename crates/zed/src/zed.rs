@@ -29,6 +29,8 @@ use futures::{StreamExt, channel::mpsc, select_biased};
 use git_ui::commit_view::CommitViewToolbar;
 use git_ui::git_panel::GitPanel;
 use git_ui::project_diff::{BranchDiffToolbar, ProjectDiffToolbar};
+use ports_panel::PortsPanel;
+use ssh_panel::SshPanel;
 use gpui::{
     Action, App, AppContext as _, Context, DismissEvent, Element, Entity,
     Focusable, KeyBinding, ParentElement, PathPromptOptions, PromptLevel, ReadGlobal, SharedString,
@@ -601,6 +603,8 @@ fn initialize_panels(
         let project_panel = ProjectPanel::load(workspace_handle.clone(), cx.clone());
         let terminal_panel = TerminalPanel::load(workspace_handle.clone(), cx.clone());
         let git_panel = GitPanel::load(workspace_handle.clone(), cx.clone());
+        let ssh_panel = SshPanel::load(workspace_handle.clone(), cx.clone());
+        let ports_panel = PortsPanel::load(workspace_handle.clone(), cx.clone());
 
         async fn add_panel_when_ready(
             panel_task: impl Future<Output = anyhow::Result<Entity<impl workspace::Panel>>> + 'static,
@@ -621,6 +625,8 @@ fn initialize_panels(
             add_panel_when_ready(project_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(terminal_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(git_panel, workspace_handle.clone(), cx.clone()),
+            add_panel_when_ready(ssh_panel, workspace_handle.clone(), cx.clone()),
+            add_panel_when_ready(ports_panel, workspace_handle.clone(), cx.clone()),
         );
 
         anyhow::Ok(())
