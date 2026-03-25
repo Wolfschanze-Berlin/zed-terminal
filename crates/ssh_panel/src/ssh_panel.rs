@@ -1,13 +1,17 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use collections::HashSet;
 use gpui::{
     Action, App, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
     Subscription, WeakEntity, actions,
 };
-use terminal_view::terminal_panel::TerminalPanel;
+use remote::SshConnectionOptions;
 use ui::prelude::*;
 use ui::Tooltip;
+use util::ResultExt as _;
 use workspace::{
-    Workspace,
+    AppState, OpenOptions, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
 };
 
@@ -83,31 +87,76 @@ impl SshPanel {
         cx.notify();
     }
 
-    fn connect_to_host(&mut self, host_index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn connect_to_host(&mut self, host_index: usize, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(host) = self.hosts.get(host_index) else {
             return;
         };
 
-        let mut ssh_args = vec![host.name.clone()];
-        if let Some(port) = host.port {
-            ssh_args.insert(0, port.to_string());
-            ssh_args.insert(0, "-p".to_string());
-        }
+        let hostname = host
+            .hostname
+            .clone()
+            .unwrap_or_else(|| host.name.clone());
+
+        let connection_options = SshConnectionOptions {
+            host: hostname.into(),
+            username: host.user.clone(),
+            port: host.port,
+            nickname: Some(host.name.clone()),
+            ..Default::default()
+        };
 
         let host_name = host.name.clone();
-        self.connected_hosts.insert(host_name);
+
+        let app_state = match self.workspace.read_with(cx, |workspace, _cx| {
+            workspace.app_state().clone()
+        }) {
+            Ok(state) => state,
+            Err(error) => {
+                log::error!("SSH panel: workspace no longer available: {}", error);
+                return;
+            }
+        };
+
+        self.connected_hosts.insert(host_name.clone());
         cx.notify();
 
-        let workspace = self.workspace.clone();
-        let ssh_args_clone = ssh_args;
-        cx.spawn_in(window, async move |_this, cx| {
-            workspace.update_in(cx, |workspace, window, cx| {
-                if let Some(terminal_panel) = workspace.panel::<TerminalPanel>(cx) {
-                    terminal_panel.update(cx, |panel, cx| {
-                        panel.spawn_ssh_terminal(ssh_args_clone, window, cx);
-                    });
-                }
-            })
+        let remote_options = remote::RemoteConnectionOptions::Ssh(connection_options);
+        Self::open_ssh_connection(remote_options, app_state, host_name, cx);
+    }
+
+    fn open_ssh_connection(
+        connection_options: remote::RemoteConnectionOptions,
+        app_state: Arc<AppState>,
+        host_name: String,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let open_options = OpenOptions::default();
+            let paths: Vec<PathBuf> = vec![];
+
+            let result = recent_projects::open_remote_project(
+                connection_options,
+                paths,
+                app_state,
+                open_options,
+                cx,
+            )
+            .await;
+
+            if let Err(error) = &result {
+                log::error!(
+                    "SSH connection failed for host {}: {:?}",
+                    host_name,
+                    error
+                );
+                this.update(cx, |this, cx| {
+                    this.connected_hosts.remove(&host_name);
+                    cx.notify();
+                })
+                .log_err();
+            }
+
+            result
         })
         .detach_and_log_err(cx);
     }
