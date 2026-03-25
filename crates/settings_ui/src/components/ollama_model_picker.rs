@@ -27,7 +27,7 @@ impl OllamaModelPickerDelegate {
         on_model_changed: impl Fn(SharedString, &mut Window, &mut App) + 'static,
         cx: &mut Context<OllamaModelPicker>,
     ) -> Self {
-        let mut models = edit_prediction::ollama::fetch_models(cx);
+        let mut models: Vec<SharedString> = Vec::new();
 
         let current_in_list = models.contains(&current_model);
         if !current_model.is_empty() && !current_in_list {

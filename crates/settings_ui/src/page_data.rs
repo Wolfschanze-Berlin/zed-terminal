@@ -11,7 +11,7 @@ use ui::IntoElement;
 use crate::{
     ActionLink, DynamicItem, PROJECT, SettingField, SettingItem, SettingsFieldMetadata,
     SettingsPage, SettingsPageItem, SubPageLink, USER, active_language, all_language_names,
-    pages::{open_audio_test_window, render_edit_prediction_setup_page},
+    pages::open_audio_test_window,
 };
 
 const DEFAULT_STRING: String = String::new();
@@ -2894,8 +2894,7 @@ fn languages_and_tools_page(cx: &App) -> SettingsPage {
                     render: |this, scroll_handle, window, cx| {
                         let items: Box<[SettingsPageItem]> = concat_sections!(
                             language_settings_data(),
-                            non_editor_language_settings_data(),
-                            edit_prediction_language_settings_section()
+                            non_editor_language_settings_data()
                         );
                         this.render_sub_page_items(
                             items.iter().enumerate(),
@@ -7068,7 +7067,6 @@ fn ai_page() -> SettingsPage {
         items: concat_sections![
             general_section(),
             context_servers_section(),
-            edit_prediction_language_settings_section(),
             edit_prediction_display_sub_section()
         ],
     }
@@ -8731,61 +8729,6 @@ fn non_editor_language_settings_data() -> Box<[SettingsPageItem]> {
     )
 }
 
-fn edit_prediction_language_settings_section() -> [SettingsPageItem; 4] {
-    [
-        SettingsPageItem::SectionHeader("Edit Predictions"),
-        SettingsPageItem::SubPageLink(SubPageLink {
-            title: "Configure Providers".into(),
-            r#type: Default::default(),
-            json_path: Some("edit_predictions.providers"),
-            description: Some("Set up different edit prediction providers in complement to Zed's built-in Zeta model.".into()),
-            in_json: false,
-            files: USER,
-            render: render_edit_prediction_setup_page
-        }),
-        SettingsPageItem::SettingItem(SettingItem {
-            title: "Show Edit Predictions",
-            description: "Controls whether edit predictions are shown immediately or manually.",
-            field: Box::new(SettingField {
-                json_path: Some("languages.$(language).show_edit_predictions"),
-                pick: |settings_content| {
-                    language_settings_field(settings_content, |language| {
-                        language.show_edit_predictions.as_ref()
-                    })
-                },
-                write: |settings_content, value| {
-                    language_settings_field_mut(settings_content, value, |language, value| {
-                        language.show_edit_predictions = value;
-                    })
-                },
-            }),
-            metadata: None,
-            files: USER | PROJECT,
-        }),
-        SettingsPageItem::SettingItem(SettingItem {
-            title: "Disable in Language Scopes",
-            description: "Controls whether edit predictions are shown in the given language scopes.",
-            field: Box::new(
-                SettingField {
-                    json_path: Some("languages.$(language).edit_predictions_disabled_in"),
-                    pick: |settings_content| {
-                        language_settings_field(settings_content, |language| {
-                            language.edit_predictions_disabled_in.as_ref()
-                        })
-                    },
-                    write: |settings_content, value| {
-                        language_settings_field_mut(settings_content, value, |language, value| {
-                            language.edit_predictions_disabled_in = value;
-                        })
-                    },
-                }
-                .unimplemented(),
-            ),
-            metadata: None,
-            files: USER | PROJECT,
-        }),
-    ]
-}
 
 fn show_scrollbar_or_editor(
     settings_content: &SettingsContent,
