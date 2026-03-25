@@ -4,14 +4,14 @@ use std::sync::Arc;
 use collections::HashSet;
 use gpui::{
     Action, App, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    Subscription, WeakEntity, actions,
+    Subscription, WeakEntity, WindowHandle, actions,
 };
 use remote::SshConnectionOptions;
 use ui::prelude::*;
 use ui::Tooltip;
 use util::ResultExt as _;
 use workspace::{
-    AppState, OpenOptions, Workspace,
+    AppState, MultiWorkspace, OpenOptions, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
 };
 
@@ -87,7 +87,7 @@ impl SshPanel {
         cx.notify();
     }
 
-    fn connect_to_host(&mut self, host_index: usize, _window: &mut Window, cx: &mut Context<Self>) {
+    fn connect_to_host(&mut self, host_index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(host) = self.hosts.get(host_index) else {
             return;
         };
@@ -117,21 +117,29 @@ impl SshPanel {
             }
         };
 
+        let current_window = window
+            .window_handle()
+            .downcast::<MultiWorkspace>();
+
         self.connected_hosts.insert(host_name.clone());
         cx.notify();
 
         let remote_options = remote::RemoteConnectionOptions::Ssh(connection_options);
-        Self::open_ssh_connection(remote_options, app_state, host_name, cx);
+        Self::open_ssh_connection(remote_options, app_state, host_name, current_window, cx);
     }
 
     fn open_ssh_connection(
         connection_options: remote::RemoteConnectionOptions,
         app_state: Arc<AppState>,
         host_name: String,
+        current_window: Option<WindowHandle<MultiWorkspace>>,
         cx: &mut Context<Self>,
     ) {
         cx.spawn(async move |this, cx| {
-            let open_options = OpenOptions::default();
+            let open_options = OpenOptions {
+                replace_window: current_window,
+                ..Default::default()
+            };
             let paths: Vec<PathBuf> = vec!["~".into()];
 
             let result = recent_projects::open_remote_project(
