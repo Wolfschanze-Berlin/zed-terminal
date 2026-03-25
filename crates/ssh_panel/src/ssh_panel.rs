@@ -1,17 +1,13 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-
 use collections::HashSet;
 use gpui::{
     Action, App, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    Subscription, WeakEntity, WindowHandle, actions,
+    Subscription, WeakEntity, actions,
 };
-use remote::SshConnectionOptions;
+use terminal_view::terminal_panel::TerminalPanel;
 use ui::prelude::*;
 use ui::Tooltip;
-use util::ResultExt as _;
 use workspace::{
-    AppState, MultiWorkspace, OpenOptions, Workspace,
+    Workspace,
     dock::{DockPosition, Panel, PanelEvent},
 };
 
@@ -92,79 +88,27 @@ impl SshPanel {
             return;
         };
 
-        let hostname = host
-            .hostname
-            .clone()
-            .unwrap_or_else(|| host.name.clone());
-
-        let connection_options = SshConnectionOptions {
-            host: hostname.into(),
-            username: host.user.clone(),
-            port: host.port,
-            nickname: Some(host.name.clone()),
-            ..Default::default()
-        };
+        let mut ssh_args = Vec::new();
+        if let Some(port) = host.port {
+            ssh_args.push("-p".to_string());
+            ssh_args.push(port.to_string());
+        }
+        ssh_args.push(host.name.clone());
 
         let host_name = host.name.clone();
-
-        let app_state = match self.workspace.read_with(cx, |workspace, _cx| {
-            workspace.app_state().clone()
-        }) {
-            Ok(state) => state,
-            Err(error) => {
-                log::error!("SSH panel: workspace no longer available: {}", error);
-                return;
-            }
-        };
-
-        let current_window = window
-            .window_handle()
-            .downcast::<MultiWorkspace>();
-
-        self.connected_hosts.insert(host_name.clone());
+        self.connected_hosts.insert(host_name);
         cx.notify();
 
-        let remote_options = remote::RemoteConnectionOptions::Ssh(connection_options);
-        Self::open_ssh_connection(remote_options, app_state, host_name, current_window, cx);
-    }
-
-    fn open_ssh_connection(
-        connection_options: remote::RemoteConnectionOptions,
-        app_state: Arc<AppState>,
-        host_name: String,
-        current_window: Option<WindowHandle<MultiWorkspace>>,
-        cx: &mut Context<Self>,
-    ) {
-        cx.spawn(async move |this, cx| {
-            let open_options = OpenOptions {
-                replace_window: current_window,
-                ..Default::default()
-            };
-            let paths: Vec<PathBuf> = vec!["~".into()];
-
-            let result = recent_projects::open_remote_project(
-                connection_options,
-                paths,
-                app_state,
-                open_options,
-                cx,
-            )
-            .await;
-
-            if let Err(error) = &result {
-                log::error!(
-                    "SSH connection failed for host {}: {:?}",
-                    host_name,
-                    error
-                );
-                this.update(cx, |this, cx| {
-                    this.connected_hosts.remove(&host_name);
-                    cx.notify();
-                })
-                .log_err();
-            }
-
-            result
+        let workspace = self.workspace.clone();
+        let args = ssh_args;
+        cx.spawn_in(window, async move |_this, cx| {
+            workspace.update_in(cx, |workspace, window, cx| {
+                if let Some(terminal_panel) = workspace.panel::<TerminalPanel>(cx) {
+                    terminal_panel.update(cx, |panel, cx| {
+                        panel.spawn_ssh_terminal(args, window, cx);
+                    });
+                }
+            })
         })
         .detach_and_log_err(cx);
     }

@@ -13972,12 +13972,10 @@ dependencies = [
  "dirs 4.0.0",
  "gpui",
  "log",
- "recent_projects",
- "remote",
  "serde",
  "settings",
+ "terminal_view",
  "ui",
- "util",
  "workspace",
 ]
 
