@@ -2,6 +2,7 @@ use gpui::{
     Action, App, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
     Subscription, WeakEntity, actions,
 };
+use settings_content::SshPortForwardOption;
 use ui::{Tooltip, prelude::*};
 use workspace::{
     Workspace,
@@ -24,26 +25,27 @@ pub fn init(cx: &mut App) {
     .detach();
 }
 
-#[derive(Clone, Debug)]
-struct PortForward {
-    local_port: u16,
-    remote_host: String,
-    remote_port: u16,
-    status: ForwardStatus,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 enum ForwardStatus {
     Active,
-    Connecting,
+    Inactive,
     Failed(String),
+}
+
+#[derive(Clone, Debug)]
+struct PortForwardEntry {
+    option: SshPortForwardOption,
+    status: ForwardStatus,
 }
 
 pub struct PortsPanel {
     focus_handle: FocusHandle,
     width: Option<Pixels>,
-    forwards: Vec<PortForward>,
+    forwards: Vec<PortForwardEntry>,
     show_add_form: bool,
+    form_local_port: String,
+    form_remote_host: String,
+    form_remote_port: String,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -54,6 +56,9 @@ impl PortsPanel {
             width: None,
             forwards: Vec::new(),
             show_add_form: false,
+            form_local_port: String::new(),
+            form_remote_host: String::new(),
+            form_remote_port: String::new(),
             _subscriptions: Vec::new(),
         }
     }
@@ -69,18 +74,53 @@ impl PortsPanel {
 
     fn toggle_add_form(&mut self, cx: &mut Context<Self>) {
         self.show_add_form = !self.show_add_form;
+        if self.show_add_form {
+            self.form_local_port.clear();
+            self.form_remote_host.clear();
+            self.form_remote_port.clear();
+        }
         cx.notify();
     }
 
-    fn add_mock_forward(&mut self, cx: &mut Context<Self>) {
-        let local_port = 8080 + self.forwards.len() as u16;
-        self.forwards.push(PortForward {
+    fn add_forward_from_form(&mut self, cx: &mut Context<Self>) {
+        let local_port = match self.form_local_port.parse::<u16>() {
+            Ok(port) => port,
+            Err(_) => {
+                log::warn!("Invalid local port: {}", self.form_local_port);
+                return;
+            }
+        };
+
+        let remote_port = match self.form_remote_port.parse::<u16>() {
+            Ok(port) => port,
+            Err(_) => {
+                log::warn!("Invalid remote port: {}", self.form_remote_port);
+                return;
+            }
+        };
+
+        let remote_host = if self.form_remote_host.is_empty() {
+            None
+        } else {
+            Some(self.form_remote_host.clone())
+        };
+
+        let option = SshPortForwardOption {
+            local_host: None,
             local_port,
-            remote_host: "remote".into(),
-            remote_port: 80,
-            status: ForwardStatus::Active,
+            remote_host,
+            remote_port,
+        };
+
+        self.forwards.push(PortForwardEntry {
+            option,
+            status: ForwardStatus::Inactive,
         });
+
         self.show_add_form = false;
+        self.form_local_port.clear();
+        self.form_remote_host.clear();
+        self.form_remote_port.clear();
         cx.notify();
     }
 
@@ -89,6 +129,10 @@ impl PortsPanel {
             self.forwards.remove(index);
             cx.notify();
         }
+    }
+
+    pub fn port_forward_options(&self) -> Vec<SshPortForwardOption> {
+        self.forwards.iter().map(|entry| entry.option.clone()).collect()
     }
 }
 
@@ -150,7 +194,6 @@ impl Render for PortsPanel {
         let has_forwards = !self.forwards.is_empty();
         let show_form = self.show_add_form;
 
-        // Build header
         let header = h_flex()
             .w_full()
             .justify_between()
@@ -179,6 +222,24 @@ impl Render for PortsPanel {
             .child(header);
 
         if show_form {
+            let local_port_display = if self.form_local_port.is_empty() {
+                "local port".to_string()
+            } else {
+                self.form_local_port.clone()
+            };
+
+            let remote_host_display = if self.form_remote_host.is_empty() {
+                "remote host (optional)".to_string()
+            } else {
+                self.form_remote_host.clone()
+            };
+
+            let remote_port_display = if self.form_remote_port.is_empty() {
+                "remote port".to_string()
+            } else {
+                self.form_remote_port.clone()
+            };
+
             let form = v_flex()
                 .p_2()
                 .gap_2()
@@ -190,20 +251,42 @@ impl Render for PortsPanel {
                         .color(Color::Muted),
                 )
                 .child(
-                    h_flex().gap_1().child(
-                        Label::new("localhost:8080 \u{2192} remote:80")
-                            .size(LabelSize::Small)
-                            .color(Color::Default),
-                    ),
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            Label::new(format!("Local: {}", local_port_display))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new(format!("Host: {}", remote_host_display))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new(format!("Remote: {}", remote_port_display))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        ),
                 )
                 .child(
-                    h_flex().gap_2().child(
-                        Button::new("submit-forward", "Forward")
-                            .style(ButtonStyle::Filled)
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.add_mock_forward(cx);
-                            })),
-                    ),
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("submit-forward", "Forward")
+                                .style(ButtonStyle::Filled)
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.add_forward_from_form(cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("cancel-forward", "Cancel")
+                                .style(ButtonStyle::Subtle)
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.show_add_form = false;
+                                    cx.notify();
+                                })),
+                        ),
                 );
             panel = panel.child(form);
         }
@@ -212,21 +295,27 @@ impl Render for PortsPanel {
             let forwards = self.forwards.clone();
             let mut rows = v_flex().id("forwards-list").flex_1().overflow_y_scroll();
 
-            for (index, forward) in forwards.iter().enumerate() {
-                let status_color = match &forward.status {
+            for (index, entry) in forwards.iter().enumerate() {
+                let status_color = match &entry.status {
                     ForwardStatus::Active => Color::Success,
-                    ForwardStatus::Connecting => Color::Warning,
+                    ForwardStatus::Inactive => Color::Muted,
                     ForwardStatus::Failed(_) => Color::Error,
                 };
 
+                let remote_host = entry
+                    .option
+                    .remote_host
+                    .as_deref()
+                    .unwrap_or("localhost");
+
                 let label = format!(
                     "localhost:{} \u{2192} {}:{}",
-                    forward.local_port, forward.remote_host, forward.remote_port
+                    entry.option.local_port, remote_host, entry.option.remote_port
                 );
 
-                let status_label = match &forward.status {
+                let status_label = match &entry.status {
                     ForwardStatus::Active => "Active".to_string(),
-                    ForwardStatus::Connecting => "Connecting".to_string(),
+                    ForwardStatus::Inactive => "Inactive".to_string(),
                     ForwardStatus::Failed(reason) => format!("Failed: {reason}"),
                 };
 

@@ -11204,8 +11204,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gpui",
+ "log",
  "serde",
  "settings",
+ "settings_content",
  "ui",
  "workspace",
 ]
@@ -13966,9 +13968,12 @@ name = "ssh_panel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "collections",
  "dirs 4.0.0",
  "gpui",
  "log",
+ "recent_projects",
+ "remote",
  "serde",
  "settings",
  "ui",
