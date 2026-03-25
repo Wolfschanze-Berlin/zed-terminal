@@ -14,7 +14,9 @@ path = "src/ssh_panel.rs"
 
 [dependencies]
 anyhow.workspace = true
+dirs.workspace = true
 gpui.workspace = true
+log.workspace = true
 ui.workspace = true
 workspace.workspace = true
 settings.workspace = true
