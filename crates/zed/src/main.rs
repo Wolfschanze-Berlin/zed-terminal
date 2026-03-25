@@ -561,6 +561,7 @@ fn main() {
 
         zed::init(cx);
         project::Project::init(&client, cx);
+        project::DisableAiSettings::register(cx);
         client::init(&client, cx);
 
         let system_id = cx.foreground_executor().block_on(system_id).ok();

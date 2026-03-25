@@ -381,8 +381,7 @@ impl TitleBar {
                 zed_actions::agent::OpenClaudeAgentOnboardingModal.boxed_clone(),
                 cx,
             )
-            // When updating this to a non-AI feature release, remove this line.
-            .visible_when(|cx| !project::DisableAiSettings::get_global(cx).disable_ai)
+            .visible_when(|_cx| false)
         });
 
         let update_version = cx.new(|cx| UpdateVersion::new(cx));
