@@ -132,7 +132,7 @@ impl SshPanel {
     ) {
         cx.spawn(async move |this, cx| {
             let open_options = OpenOptions::default();
-            let paths: Vec<PathBuf> = vec![];
+            let paths: Vec<PathBuf> = vec!["~".into()];
 
             let result = recent_projects::open_remote_project(
                 connection_options,
