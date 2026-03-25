@@ -38,7 +38,10 @@ pub fn toggle_screen_sharing(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let call = ActiveCall::global(cx).read(cx);
+    let Some(active_call) = ActiveCall::try_global(cx) else {
+        return;
+    };
+    let call = active_call.read(cx);
     let toggle_screen_sharing = match screen {
         Ok(screen) => {
             let Some(room) = call.room().cloned() else {
@@ -90,7 +93,10 @@ pub fn toggle_screen_sharing(
 }
 
 pub fn toggle_mute(cx: &mut App) {
-    let call = ActiveCall::global(cx).read(cx);
+    let Some(active_call) = ActiveCall::try_global(cx) else {
+        return;
+    };
+    let call = active_call.read(cx);
     if let Some(room) = call.room().cloned() {
         room.update(cx, |room, cx| {
             let operation = if room.is_muted() {
@@ -110,7 +116,10 @@ pub fn toggle_mute(cx: &mut App) {
 }
 
 pub fn toggle_deafen(cx: &mut App) {
-    if let Some(room) = ActiveCall::global(cx).read(cx).room().cloned() {
+    let Some(active_call) = ActiveCall::try_global(cx) else {
+        return;
+    };
+    if let Some(room) = active_call.read(cx).room().cloned() {
         room.update(cx, |room, cx| room.toggle_deafen(cx));
     }
 }
@@ -146,7 +155,8 @@ impl TitleBar {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let room = ActiveCall::global(cx).read(cx).room().cloned();
+        let room = ActiveCall::try_global(cx)
+            .and_then(|call| call.read(cx).room().cloned());
         let current_user = self.user_store.read(cx).current_user();
         let client = self.client.clone();
         let project_id = self.project.read(cx).remote_id();
@@ -337,7 +347,9 @@ impl TitleBar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let Some(room) = ActiveCall::global(cx).read(cx).room().cloned() else {
+        let Some(room) = ActiveCall::try_global(cx)
+            .and_then(|call| call.read(cx).room().cloned())
+        else {
             return Vec::new();
         };
 
@@ -422,7 +434,7 @@ impl TitleBar {
                         .tooltip(Tooltip::text("Leave Call"))
                         .icon_size(IconSize::Small)
                         .on_click(move |_, _window, cx| {
-                            ActiveCall::global(cx)
+                            ActiveCall::try_global(cx).expect("room exists so ActiveCall must exist")
                                 .update(cx, |call, cx| call.hang_up(cx))
                                 .detach_and_log_err(cx);
                         }),
@@ -564,7 +576,7 @@ impl TitleBar {
                     "Share Screen"
                 }))
                 .on_click(move |_, window, cx| {
-                    let should_share = ActiveCall::global(cx)
+                    let should_share = ActiveCall::try_global(cx).expect("room exists so ActiveCall must exist")
                         .read(cx)
                         .room()
                         .is_some_and(|room| !room.read(cx).is_sharing_screen());
@@ -572,7 +584,7 @@ impl TitleBar {
                     #[cfg(target_os = "linux")]
                     {
                         if is_wayland
-                            && let Some(room) = ActiveCall::global(cx).read(cx).room().cloned()
+                            && let Some(room) = ActiveCall::try_global(cx).expect("room exists so ActiveCall must exist").read(cx).room().cloned()
                         {
                             let task = room.update(cx, |room, cx| {
                                 if should_share {
@@ -646,7 +658,7 @@ impl TitleBar {
                     cx.spawn(async move |this: WeakEntity<ContextMenu>, cx| {
                         let screens = screens.await??;
                         this.update(cx, |this, cx| {
-                            let active_screenshare_id = ActiveCall::global(cx)
+                            let active_screenshare_id = ActiveCall::try_global(cx).expect("room exists so ActiveCall must exist")
                                 .read(cx)
                                 .room()
                                 .and_then(|room| room.read(cx).shared_screen_id());
