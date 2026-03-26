@@ -7,7 +7,7 @@ use crate::{
 };
 use anyhow::{Context as _, Result};
 use futures::{
-    AsyncReadExt as _, FutureExt as _, StreamExt as _,
+    AsyncReadExt as _, AsyncWriteExt as _, FutureExt as _, StreamExt as _,
     channel::mpsc::{Sender, UnboundedReceiver, UnboundedSender},
 };
 use gpui::{AppContext as _, AsyncApp, Task};
@@ -76,24 +76,39 @@ fn handle_rpc_messages_over_child_process_stdio(
     cx: &AsyncApp,
 ) -> Task<Result<i32>> {
     let mut child_stderr = remote_proxy_process.stderr.take().unwrap();
-    let mut child_stdout = remote_proxy_process.stdout.take().unwrap();
-    let mut child_stdin = remote_proxy_process.stdin.take().unwrap();
+    let child_stdout = remote_proxy_process.stdout.take().unwrap();
+    let child_stdin = remote_proxy_process.stdin.take().unwrap();
 
     let mut stdin_buffer = Vec::new();
     let mut stdout_buffer = Vec::new();
     let mut stderr_buffer = Vec::new();
     let mut stderr_offset = 0;
 
+    // #7: Message batching — drain all queued messages before writing to reduce
+    // syscall overhead. After the first blocking recv, collect any additional
+    // messages that arrived while we were writing the previous batch.
     let stdin_task = cx.background_spawn(async move {
+        let mut child_stdin = futures::io::BufWriter::new(child_stdin);
         while let Some(outgoing) = outgoing_rx.next().await {
             write_message(&mut child_stdin, &mut stdin_buffer, outgoing).await?;
+
+            // Drain any additional queued messages without blocking
+            while let Ok(Some(outgoing)) = outgoing_rx.try_next() {
+                write_message(&mut child_stdin, &mut stdin_buffer, outgoing).await?;
+            }
+            // Flush the batch
+            child_stdin.flush().await?;
         }
         anyhow::Ok(())
     });
 
+    // #6: BufReader — reduce syscall count by reading from a kernel buffer
+    // instead of issuing separate read() calls for the 4-byte length prefix
+    // and each message body.
     let stdout_task = cx.background_spawn({
         let mut connection_activity_tx = connection_activity_tx.clone();
         async move {
+            let mut child_stdout = futures::io::BufReader::new(child_stdout);
             loop {
                 stdout_buffer.resize(MESSAGE_LEN_SIZE, 0);
                 let len = child_stdout.read(&mut stdout_buffer).await?;
