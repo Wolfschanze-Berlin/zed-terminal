@@ -71,6 +71,19 @@ fn forward_key(host: &str, local_port: u16, remote_port: u16) -> String {
     format!("{}:{}:{}", host, local_port, remote_port)
 }
 
+/// Common development server port ranges that should be auto-forwarded.
+/// Other detected ports are shown in the "Detected" section for manual forwarding.
+fn is_common_dev_port(port: u16) -> bool {
+    matches!(
+        port,
+        3000..=3999  // Node.js, Next.js, React, Vite
+        | 4000..=4999  // Remix, Phoenix, custom
+        | 5000..=5999  // Flask, Vite, SvelteKit
+        | 8000..=8999  // Django, FastAPI, Spring Boot
+        | 9000..=9999  // PHP, various
+    )
+}
+
 /// Find an available local port, starting from `preferred` and incrementing.
 fn find_available_port(preferred: u16) -> u16 {
     for port in preferred..=preferred.saturating_add(100) {
@@ -364,7 +377,11 @@ impl PortsPanel {
 
         let new_ports: Vec<u16> = ports
             .iter()
-            .filter(|d| !previous_ports.contains(&d.port) && !already_forwarded.contains(&d.port))
+            .filter(|d| {
+                !previous_ports.contains(&d.port)
+                    && !already_forwarded.contains(&d.port)
+                    && is_common_dev_port(d.port)
+            })
             .map(|d| d.port)
             .collect();
 
@@ -597,6 +614,10 @@ impl PortsPanel {
                 cmd.arg("-o").arg("ExitOnForwardFailure=yes");
                 cmd.arg("-o").arg("ServerAliveInterval=15");
                 cmd.arg("-o").arg("ServerAliveCountMax=3");
+                cmd.arg("-o").arg("StrictHostKeyChecking=no");
+                cmd.arg("-o").arg("UserKnownHostsFile=/dev/null");
+                cmd.arg("-o").arg("BatchMode=yes");
+                cmd.arg("-o").arg("ConnectTimeout=10");
 
                 if let Some(port) = ssh_port {
                     cmd.arg("-p").arg(port.to_string());
