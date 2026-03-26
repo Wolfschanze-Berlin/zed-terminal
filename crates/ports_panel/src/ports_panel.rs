@@ -724,14 +724,17 @@ impl PortsPanel {
                     })
                     .await;
 
+                    // Use actual_local_port for key lookup since the entry's local_port
+                    // may have been updated by the port fallback logic
+                    let final_key = forward_key(&host_name, actual_local_port, remote_port);
                     this.update(cx, |this, cx| {
                         if let Some(entry) = this.forwards.iter_mut().find(|f| {
                             forward_key(&f.host_name, f.option.local_port, f.option.remote_port)
-                                == key_for_task
+                                == final_key
                         }) {
                             if let Some(err) = error_msg {
                                 entry.status = ForwardStatus::Failed(err);
-                                this.tunnels.remove(&key_for_task);
+                                this.tunnels.remove(&final_key);
                             } else {
                                 entry.status = ForwardStatus::Active;
                                 log::info!(
