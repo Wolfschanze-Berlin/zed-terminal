@@ -446,9 +446,14 @@ impl PortsPanel {
                 panel.detect_remote_ports(index, cx);
             });
         } else {
-            // Host not in SSH config (e.g., connected via raw IP from remote window).
-            // Run detection using the host name directly as SSH destination.
-            let host_for_scan = host_name.clone();
+            // Host not in SSH config — use the real SSH destination from connection store
+            let host_for_scan = ssh_panel
+                .read(cx)
+                .connection_store()
+                .lock()
+                .ssh_destination(&host_name)
+                .cloned()
+                .unwrap_or_else(|| host_name.clone());
             cx.spawn(async move |this, cx: &mut AsyncApp| {
                 let detected = cx
                     .background_spawn(async move {
@@ -569,17 +574,22 @@ impl PortsPanel {
             .to_string();
         let remote_port = entry.option.remote_port;
 
-        // Look up the SSH config entry, or fall back to using the host name directly
-        let ssh_config_host = self
+        // Get the actual SSH destination (hostname/IP) from the connection store.
+        // The host_name may be a nickname like "camelot-server" that SSH doesn't know.
+        let (ssh_destination, ssh_port) = self
             .ssh_panel
             .as_ref()
-            .and_then(|p| p.read(cx).host_by_name(&host_name).cloned());
-
-        let ssh_destination = ssh_config_host
-            .as_ref()
-            .map(|h| h.name.clone())
-            .unwrap_or_else(|| host_name.clone());
-        let ssh_port = ssh_config_host.as_ref().and_then(|h| h.port);
+            .map(|p| {
+                let panel = p.read(cx);
+                let store = panel.connection_store().lock();
+                let destination = store
+                    .ssh_destination(&host_name)
+                    .cloned()
+                    .unwrap_or_else(|| host_name.clone());
+                let port = panel.host_by_name(&host_name).and_then(|h| h.port);
+                (destination, port)
+            })
+            .unwrap_or_else(|| (host_name.clone(), None));
 
         entry.status = ForwardStatus::Starting;
         cx.notify();

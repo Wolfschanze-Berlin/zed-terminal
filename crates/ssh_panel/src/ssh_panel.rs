@@ -84,6 +84,8 @@ pub enum SshPanelEvent {
 #[derive(Default)]
 pub struct SshConnectionStore {
     connections: HashMap<String, ConnectionState>,
+    /// Maps display name to the actual SSH destination (hostname/IP)
+    ssh_destinations: HashMap<String, String>,
 }
 
 impl SshConnectionStore {
@@ -102,13 +104,23 @@ impl SshConnectionStore {
             .collect()
     }
 
+    /// Get the actual SSH destination for a host (may differ from display name)
+    pub fn ssh_destination(&self, host_name: &str) -> Option<&String> {
+        self.ssh_destinations.get(host_name)
+    }
+
     fn set_state(&mut self, host_name: &str, state: ConnectionState) {
         if state == ConnectionState::Disconnected {
             self.connections.remove(host_name);
+            self.ssh_destinations.remove(host_name);
         } else {
             self.connections
                 .insert(host_name.to_string(), state);
         }
+    }
+
+    fn set_ssh_destination(&mut self, host_name: &str, destination: String) {
+        self.ssh_destinations.insert(host_name.to_string(), destination);
     }
 }
 
@@ -149,13 +161,16 @@ impl SshPanel {
             });
 
             if let Some(name) = matched_name {
-                connection_store
-                    .lock()
-                    .set_state(&name, ConnectionState::Connected);
+                let mut store = connection_store.lock();
+                store.set_state(&name, ConnectionState::Connected);
+                store.set_ssh_destination(&name, connected_host_str);
             } else {
-                connection_store
-                    .lock()
-                    .set_state(&connected_host_str, ConnectionState::Connected);
+                let display_name = nickname
+                    .unwrap_or(&connected_host_str)
+                    .to_string();
+                let mut store = connection_store.lock();
+                store.set_state(&display_name, ConnectionState::Connected);
+                store.set_ssh_destination(&display_name, connected_host_str);
             }
         }
 
