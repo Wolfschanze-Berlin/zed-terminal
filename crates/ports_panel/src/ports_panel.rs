@@ -608,46 +608,43 @@ impl PortsPanel {
         );
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
-            // Spawn the SSH tunnel on a background thread using std::process
-            let result = cx.background_spawn(async move {
-                let actual_local_port = find_available_port(local_port);
+            // Spawn SSH tunnel synchronously — must happen with full env/PATH
+            let actual_local_port = find_available_port(local_port);
 
-                let forward_spec = format!(
-                    "{}:{}:{}",
-                    actual_local_port, remote_host, remote_port
-                );
+            let forward_spec = format!(
+                "{}:{}:{}",
+                actual_local_port, remote_host, remote_port
+            );
 
-                let mut cmd = std::process::Command::new("ssh");
-                cmd.arg("-N");
-                cmd.arg("-L").arg(&forward_spec);
-                cmd.arg("-o").arg("ExitOnForwardFailure=yes");
-                cmd.arg("-o").arg("ServerAliveInterval=15");
-                cmd.arg("-o").arg("ServerAliveCountMax=3");
-                cmd.arg("-o").arg("StrictHostKeyChecking=no");
-                cmd.arg("-o").arg("UserKnownHostsFile=/dev/null");
-                cmd.arg("-o").arg("BatchMode=yes");
-                cmd.arg("-o").arg("ConnectTimeout=10");
+            let mut cmd = std::process::Command::new("ssh");
+            cmd.arg("-N");
+            cmd.arg("-L").arg(&forward_spec);
+            cmd.arg("-o").arg("ExitOnForwardFailure=yes");
+            cmd.arg("-o").arg("ServerAliveInterval=15");
+            cmd.arg("-o").arg("ServerAliveCountMax=3");
+            cmd.arg("-o").arg("StrictHostKeyChecking=no");
+            cmd.arg("-o").arg("UserKnownHostsFile=/dev/null");
+            cmd.arg("-o").arg("BatchMode=yes");
+            cmd.arg("-o").arg("ConnectTimeout=10");
 
-                if let Some(port) = ssh_port {
-                    cmd.arg("-p").arg(port.to_string());
-                }
+            if let Some(port) = ssh_port {
+                cmd.arg("-p").arg(port.to_string());
+            }
 
-                cmd.arg(&ssh_destination);
+            cmd.arg(&ssh_destination);
 
-                cmd.stdin(std::process::Stdio::null());
-                cmd.stdout(std::process::Stdio::null());
-                cmd.stderr(std::process::Stdio::piped());
+            cmd.stdin(std::process::Stdio::null());
+            cmd.stdout(std::process::Stdio::null());
+            cmd.stderr(std::process::Stdio::piped());
 
-                #[cfg(target_os = "windows")]
-                {
-                    use std::os::windows::process::CommandExt;
-                    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-                }
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            }
 
-                let child = cmd.spawn().context("Failed to spawn SSH tunnel")?;
-                anyhow::Ok((child, actual_local_port))
-            })
-            .await;
+            let result = cmd.spawn().context("Failed to spawn SSH tunnel");
+            let result = result.map(|child| (child, actual_local_port));
 
             match result {
                 Ok((child, actual_local_port)) => {
