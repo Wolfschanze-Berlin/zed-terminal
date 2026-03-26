@@ -630,41 +630,51 @@ impl PortsPanel {
                         })?;
                     }
 
-                    // Wait for SSH to establish connection and bind port
-                    cx.background_spawn(async {
-                        smol::Timer::after(std::time::Duration::from_secs(2)).await;
+                    // Poll until the tunnel is ready, the process exits, or we timeout.
+                    // Check every 500ms for up to 30 seconds.
+                    let poll_port = actual_local_port;
+                    let error_msg = cx.background_spawn({
+                        let child_arc = child_arc_clone.clone();
+                        async move {
+                            for _ in 0..60 {
+                                smol::Timer::after(std::time::Duration::from_millis(500)).await;
+
+                                // Check if process exited (error)
+                                let exited = child_arc
+                                    .lock()
+                                    .as_mut()
+                                    .map(|c| c.try_status().ok().flatten().is_some())
+                                    .unwrap_or(true);
+
+                                if exited {
+                                    // Read stderr for error details
+                                    let stderr_handle = child_arc
+                                        .lock()
+                                        .as_mut()
+                                        .and_then(|c| c.stderr.take());
+                                    if let Some(mut stderr) = stderr_handle {
+                                        use smol::io::AsyncReadExt;
+                                        let mut buf = String::new();
+                                        let _ = stderr.read_to_string(&mut buf).await;
+                                        if !buf.trim().is_empty() {
+                                            let short = buf.trim().lines().last()
+                                                .unwrap_or(buf.trim());
+                                            return Some(short.to_string());
+                                        }
+                                    }
+                                    return Some("SSH tunnel exited unexpectedly".to_string());
+                                }
+
+                                // Check if SSH has bound the local port.
+                                // If we can't bind it ourselves, SSH has it.
+                                if std::net::TcpListener::bind(("127.0.0.1", poll_port)).is_err() {
+                                    return None; // SSH has bound the port — tunnel is ready
+                                }
+                            }
+                            Some("Tunnel startup timed out (30s)".to_string())
+                        }
                     })
                     .await;
-
-                    // Check if process exited (auth failure, bind failure, etc.)
-                    let exited = child_arc_clone
-                        .lock()
-                        .as_mut()
-                        .map(|c| c.try_status().ok().flatten().is_some())
-                        .unwrap_or(false);
-
-                    let error_msg = if exited {
-                        // Take stderr handle out of the child for async reading
-                        let stderr_handle = child_arc_clone
-                            .lock()
-                            .as_mut()
-                            .and_then(|c| c.stderr.take());
-                        if let Some(mut stderr) = stderr_handle {
-                            use smol::io::AsyncReadExt;
-                            let mut buf = String::new();
-                            let _ = stderr.read_to_string(&mut buf).await;
-                            if buf.trim().is_empty() {
-                                Some("SSH tunnel exited unexpectedly".to_string())
-                            } else {
-                                let short = buf.trim().lines().last().unwrap_or(buf.trim());
-                                Some(short.to_string())
-                            }
-                        } else {
-                            Some("SSH tunnel exited unexpectedly".to_string())
-                        }
-                    } else {
-                        None
-                    };
 
                     this.update(cx, |this, cx| {
                         if let Some(entry) = this.forwards.iter_mut().find(|f| {
