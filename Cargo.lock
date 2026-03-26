@@ -18212,6 +18212,7 @@ dependencies = [
  "serde_json",
  "settings",
  "theme",
+ "toml 0.8.23",
  "ui",
  "util",
  "webview_runtime",

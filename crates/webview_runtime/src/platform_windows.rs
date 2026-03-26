@@ -3,9 +3,11 @@ use std::num::NonZero;
 use anyhow::{Context as _, Result};
 use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle};
 use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, SetWindowPos, ShowWindow, HWND_TOP, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-    SW_HIDE, SW_SHOWNA, WS_CLIPCHILDREN, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+    CreateWindowExW, DestroyWindow, SetWindowPos, ShowWindow, HWND_TOP, SWP_NOACTIVATE,
+    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA, WS_CLIPCHILDREN, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_POPUP,
 };
 use windows::core::w;
 use wry::WebViewBuilder;
@@ -135,6 +137,14 @@ pub(crate) fn create(
     ))
 }
 
+impl Drop for WebviewHandle {
+    fn drop(&mut self) {
+        if let Err(err) = unsafe { DestroyWindow(self.overlay_hwnd) } {
+            log::error!("Failed to destroy webview overlay HWND: {err}");
+        }
+    }
+}
+
 impl Webview for WebviewHandle {
     fn set_bounds(&self, x: f32, y: f32, width: f32, height: f32) -> Result<()> {
         // Convert the panel-local logical coordinates to screen coordinates
@@ -192,5 +202,12 @@ impl Webview for WebviewHandle {
         self.inner
             .evaluate_script(script)
             .context("webview evaluate_script failed")
+    }
+
+    fn focus(&self) -> Result<()> {
+        unsafe {
+            SetFocus(Some(self.overlay_hwnd)).context("webview SetFocus failed")?;
+        }
+        Ok(())
     }
 }

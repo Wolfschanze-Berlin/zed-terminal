@@ -1,9 +1,11 @@
 pub mod ipc;
+pub mod permission;
 
 #[cfg(target_os = "windows")]
 mod platform_windows;
 
-pub use ipc::{IpcDispatcher, IpcReceiver, IpcSender};
+pub use ipc::{IpcDispatcher, IpcEmitter, IpcEvent, IpcReceiver, IpcSender};
+pub use permission::{PermissionError, PermissionSet, RateLimiter, generate_csp};
 
 /// What content the webview should load initially.
 pub enum WebviewContent {
@@ -30,6 +32,11 @@ pub struct WebviewConfig {
 /// Platform-independent interface to a live webview instance.
 ///
 /// All methods must be called from the GPUI foreground thread.
+///
+/// Callers must extract the platform-native window handle (e.g. `HWND` on
+/// Windows) from the GPUI `Window` before calling [`create_webview`]. On
+/// Windows this is done via `window.get_raw_handle()`. The handle is needed
+/// to parent the webview's overlay window to the correct GPUI window.
 pub trait Webview: Send + 'static {
     /// Reposition and resize the webview to match the given logical-pixel rect
     /// relative to the parent window's client area. DPI scaling is handled
@@ -41,7 +48,25 @@ pub trait Webview: Send + 'static {
 
     /// Evaluate arbitrary JavaScript in the webview's main frame.
     fn evaluate_script(&self, script: &str) -> anyhow::Result<()>;
+
+    /// Transfer keyboard focus to the webview.
+    fn focus(&self) -> anyhow::Result<()>;
 }
+
+/// Opaque platform window handle passed to [`create_webview`].
+///
+/// On Windows this wraps an `HWND`. On other platforms it is a unit struct
+/// that exists only to keep the public API shape consistent across targets.
+#[cfg(target_os = "windows")]
+pub type PlatformWindowHandle = windows::Win32::Foundation::HWND;
+
+/// Opaque platform window handle passed to [`create_webview`].
+///
+/// On non-Windows platforms this is a dummy type. [`create_webview`] will
+/// always return an error at runtime on unsupported platforms.
+#[cfg(not(target_os = "windows"))]
+#[derive(Debug, Clone, Copy)]
+pub struct PlatformWindowHandle;
 
 /// Create a new webview attached to the given parent window.
 ///
@@ -49,10 +74,10 @@ pub trait Webview: Send + 'static {
 /// strings posted by the page via `window.ipc.postMessage(jsonString)`.
 #[cfg(target_os = "windows")]
 pub fn create_webview(
-    parent_hwnd: windows::Win32::Foundation::HWND,
+    parent_handle: PlatformWindowHandle,
     config: WebviewConfig,
 ) -> anyhow::Result<(Box<dyn Webview>, IpcReceiver)> {
-    platform_windows::create(parent_hwnd, config)
+    platform_windows::create(parent_handle, config)
 }
 
 /// Webview panels are not yet supported on non-Windows platforms.
@@ -60,6 +85,7 @@ pub fn create_webview(
 /// compile cross-platform, but it will always return an error at runtime.
 #[cfg(not(target_os = "windows"))]
 pub fn create_webview(
+    _parent_handle: PlatformWindowHandle,
     _config: WebviewConfig,
 ) -> anyhow::Result<(Box<dyn Webview>, IpcReceiver)> {
     anyhow::bail!("Webview panels are not yet supported on this platform")

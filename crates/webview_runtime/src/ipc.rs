@@ -1,6 +1,9 @@
+use std::sync::Arc;
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+
+use crate::Webview;
 
 // ── Channel types ──────────────────────────────────────────────────────────
 
@@ -70,6 +73,45 @@ impl JsonRpcError {
             code: Self::INTERNAL_ERROR,
             message: message.into(),
         }
+    }
+}
+
+// ── Rust→JS event emitter ─────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IpcEvent {
+    pub jsonrpc: String,
+    pub method: String,
+    pub params: serde_json::Value,
+}
+
+impl IpcEvent {
+    pub fn new(method: impl Into<String>, params: serde_json::Value) -> Self {
+        Self {
+            jsonrpc: "2.0".into(),
+            method: method.into(),
+            params,
+        }
+    }
+}
+
+pub struct IpcEmitter {
+    webview: Arc<dyn Webview>,
+}
+
+impl IpcEmitter {
+    pub fn new(webview: Arc<dyn Webview>) -> Self {
+        Self { webview }
+    }
+
+    /// Emit a JSON-RPC notification (no id) to the webview.
+    /// The JS side receives it via `window.__zed_ipc.on(event, callback)`.
+    pub fn emit(&self, event: &str, params: serde_json::Value) -> anyhow::Result<()> {
+        let notification = IpcEvent::new(event, params);
+        let json = serde_json::to_string(&notification)?;
+        let escaped = json.replace('\\', "\\\\").replace('\'', "\\'");
+        self.webview
+            .evaluate_script(&format!("window.__zed_ipc._dispatch('{escaped}')"))
     }
 }
 
