@@ -11203,12 +11203,19 @@ name = "ports_panel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "collections",
  "gpui",
  "log",
+ "parking_lot",
+ "paths",
  "serde",
+ "serde_json",
  "settings",
  "settings_content",
+ "smol",
+ "ssh_panel",
  "ui",
+ "util",
  "workspace",
 ]
 
@@ -13972,10 +13979,13 @@ dependencies = [
  "dirs 4.0.0",
  "gpui",
  "log",
+ "parking_lot",
+ "recent_projects",
+ "remote",
  "serde",
  "settings",
- "terminal_view",
  "ui",
+ "util",
  "workspace",
 ]
 

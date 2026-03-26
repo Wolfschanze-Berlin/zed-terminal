@@ -608,7 +608,6 @@ fn initialize_panels(
         let terminal_panel = TerminalPanel::load(workspace_handle.clone(), cx.clone());
         let git_panel = GitPanel::load(workspace_handle.clone(), cx.clone());
         let ssh_panel = SshPanel::load(workspace_handle.clone(), cx.clone());
-        let ports_panel = PortsPanel::load(workspace_handle.clone(), cx.clone());
 
         async fn add_panel_when_ready(
             panel_task: impl Future<Output = anyhow::Result<Entity<impl workspace::Panel>>> + 'static,
@@ -630,8 +629,11 @@ fn initialize_panels(
             add_panel_when_ready(terminal_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(git_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(ssh_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(ports_panel, workspace_handle.clone(), cx.clone()),
         );
+
+        // Ports panel loads after SSH panel so it can subscribe to SSH events
+        let ports_panel = PortsPanel::load(workspace_handle.clone(), cx.clone());
+        add_panel_when_ready(ports_panel, workspace_handle.clone(), cx.clone()).await;
 
         anyhow::Ok(())
     })
