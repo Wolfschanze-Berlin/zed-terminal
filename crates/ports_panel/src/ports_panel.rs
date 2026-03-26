@@ -534,7 +534,8 @@ impl PortsPanel {
             .option
             .remote_host
             .as_deref()
-            .unwrap_or("localhost");
+            .unwrap_or("localhost")
+            .to_string();
         let remote_port = entry.option.remote_port;
 
         // Look up the SSH config entry, or fall back to using the host name directly
@@ -552,17 +553,8 @@ impl PortsPanel {
         entry.status = ForwardStatus::Starting;
         cx.notify();
 
-        // Bind on 0.0.0.0 explicitly so the tunnel is accessible on both
-        // IPv4 and IPv6 loopback. Without this, Windows SSH may only bind
-        // to 127.0.0.1 while browsers resolve localhost to ::1.
-        let forward_spec = format!(
-            "0.0.0.0:{}:{}:{}",
-            local_port, remote_host, remote_port
-        );
-
         let key = forward_key(&host_name, local_port, remote_port);
         let key_for_task = key.clone();
-        let host_name_for_task = host_name.clone();
 
         let child_arc: Arc<Mutex<Option<util::command::Child>>> = Arc::new(Mutex::new(None));
         let child_arc_clone = child_arc.clone();
@@ -575,20 +567,31 @@ impl PortsPanel {
         );
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
-            let spawn_result = cx.background_spawn(async move {
-                let mut cmd = util::command::new_command("ssh");
-                cmd.arg("-N"); // no remote command
-                cmd.arg("-L");
-                cmd.arg(&forward_spec);
-
-                if let Some(port) = ssh_port {
-                    cmd.arg("-p");
-                    cmd.arg(port.to_string());
+            let result = cx.background_spawn(async move {
+                // Check if local port is already in use
+                match std::net::TcpListener::bind(("0.0.0.0", local_port)) {
+                    Ok(listener) => drop(listener), // port free, release it
+                    Err(_) => {
+                        anyhow::bail!("Local port {} already in use", local_port);
+                    }
                 }
 
-                // -o ExitOnForwardFailure=yes ensures SSH exits if the tunnel can't bind
-                cmd.arg("-o");
-                cmd.arg("ExitOnForwardFailure=yes");
+                let forward_spec = format!(
+                    "0.0.0.0:{}:{}:{}",
+                    local_port, remote_host, remote_port
+                );
+
+                let mut cmd = util::command::new_command("ssh");
+                cmd.arg("-N");
+                cmd.arg("-L");
+                cmd.arg(&forward_spec);
+                cmd.arg("-o").arg("ExitOnForwardFailure=yes");
+                cmd.arg("-o").arg("ServerAliveInterval=15");
+                cmd.arg("-o").arg("ServerAliveCountMax=3");
+
+                if let Some(port) = ssh_port {
+                    cmd.arg("-p").arg(port.to_string());
+                }
 
                 cmd.arg(&ssh_destination);
 
@@ -596,40 +599,66 @@ impl PortsPanel {
                 cmd.stdout(util::command::Stdio::null());
                 cmd.stderr(util::command::Stdio::piped());
 
-                let child = cmd.spawn().context("Failed to spawn SSH tunnel process")?;
+                let child = cmd.spawn().context("Failed to spawn SSH tunnel")?;
                 anyhow::Ok(child)
             })
             .await;
 
-            match spawn_result {
+            match result {
                 Ok(child) => {
                     *child_arc_clone.lock() = Some(child);
 
-                    // Brief delay to detect immediate bind failures
+                    // Wait for SSH to establish connection and bind port
                     cx.background_spawn(async {
-                        smol::Timer::after(std::time::Duration::from_millis(500)).await;
+                        smol::Timer::after(std::time::Duration::from_secs(2)).await;
                     })
                     .await;
 
-                    // Check if process exited immediately (bind failure)
-                    let still_running = child_arc_clone
+                    // Check if process exited (auth failure, bind failure, etc.)
+                    let exited = child_arc_clone
                         .lock()
                         .as_mut()
-                        .map(|c| c.try_status().ok().flatten().is_none())
+                        .map(|c| c.try_status().ok().flatten().is_some())
                         .unwrap_or(false);
+
+                    let error_msg = if exited {
+                        // Take stderr handle out of the child for async reading
+                        let stderr_handle = child_arc_clone
+                            .lock()
+                            .as_mut()
+                            .and_then(|c| c.stderr.take());
+                        if let Some(mut stderr) = stderr_handle {
+                            use smol::io::AsyncReadExt;
+                            let mut buf = String::new();
+                            let _ = stderr.read_to_string(&mut buf).await;
+                            if buf.trim().is_empty() {
+                                Some("SSH tunnel exited unexpectedly".to_string())
+                            } else {
+                                let short = buf.trim().lines().last().unwrap_or(buf.trim());
+                                Some(short.to_string())
+                            }
+                        } else {
+                            Some("SSH tunnel exited unexpectedly".to_string())
+                        }
+                    } else {
+                        None
+                    };
 
                     this.update(cx, |this, cx| {
                         if let Some(entry) = this.forwards.iter_mut().find(|f| {
                             forward_key(&f.host_name, f.option.local_port, f.option.remote_port)
                                 == key_for_task
                         }) {
-                            if still_running {
-                                entry.status = ForwardStatus::Active;
-                            } else {
-                                entry.status = ForwardStatus::Failed(
-                                    "Port may already be in use".to_string(),
-                                );
+                            if let Some(err) = error_msg {
+                                let short = err.lines().last().unwrap_or(&err);
+                                entry.status = ForwardStatus::Failed(short.to_string());
                                 this.tunnels.remove(&key_for_task);
+                            } else {
+                                entry.status = ForwardStatus::Active;
+                                log::info!(
+                                    "Port forward active: localhost:{} -> {}",
+                                    local_port, remote_port
+                                );
                             }
                         }
                         cx.notify();
@@ -638,10 +667,10 @@ impl PortsPanel {
                 Err(err) => {
                     this.update(cx, |this, cx| {
                         if let Some(entry) = this.forwards.iter_mut().find(|f| {
-                            f.host_name == host_name_for_task
+                            forward_key(&f.host_name, f.option.local_port, f.option.remote_port)
+                                == key_for_task
                         }) {
-                            entry.status =
-                                ForwardStatus::Failed(format!("{}", err));
+                            entry.status = ForwardStatus::Failed(format!("{}", err));
                         }
                         this.tunnels.remove(&key_for_task);
                         cx.notify();
