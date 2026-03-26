@@ -568,16 +568,18 @@ impl PortsPanel {
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx.background_spawn(async move {
-                // Check if local port is already in use
-                match std::net::TcpListener::bind(("0.0.0.0", local_port)) {
+                // Check if local port is already in use on loopback
+                match std::net::TcpListener::bind(("127.0.0.1", local_port)) {
                     Ok(listener) => drop(listener), // port free, release it
                     Err(_) => {
                         anyhow::bail!("Local port {} already in use", local_port);
                     }
                 }
 
+                // Use default bind (loopback) — 0.0.0.0 requires GatewayPorts
+                // on the server which is usually disabled.
                 let forward_spec = format!(
-                    "0.0.0.0:{}:{}:{}",
+                    "{}:{}:{}",
                     local_port, remote_host, remote_port
                 );
 
