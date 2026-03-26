@@ -17,7 +17,6 @@ anyhow.workspace = true
 dirs.workspace = true
 gpui.workspace = true
 log.workspace = true
-panel.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 settings.workspace = true

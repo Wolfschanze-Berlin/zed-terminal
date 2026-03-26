@@ -18208,7 +18208,6 @@ dependencies = [
  "dirs 4.0.0",
  "gpui",
  "log",
- "panel",
  "serde",
  "serde_json",
  "settings",

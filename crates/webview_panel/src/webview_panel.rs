@@ -3,45 +3,39 @@ mod theme_bridge;
 
 use std::sync::Arc;
 
-use gpui::{
-    Action, App, Context, EventEmitter, FocusHandle, Focusable, Pixels, Task, Window, actions,
-    canvas, px,
-};
+use gpui::{App, Context, EventEmitter, FocusHandle, Focusable, Task, Window, actions, canvas};
 use ui::prelude::*;
 use util::ResultExt as _;
 use webview_runtime::{IpcDispatcher, IpcReceiver, Webview, WebviewConfig};
 use workspace::{
     Workspace,
-    dock::{DockPosition, Panel, PanelEvent},
+    item::{Item, ItemEvent},
 };
 
-actions!(webview_panel, [ToggleFocus]);
+actions!(webview_panel, [OpenAnalyticsDashboard]);
 
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _cx| {
-        workspace.register_action(|workspace, _: &ToggleFocus, window, cx| {
-            workspace.toggle_panel_focus::<WebViewPanel>(window, cx);
+        workspace.register_action(|workspace, _: &OpenAnalyticsDashboard, window, cx| {
+            let item = cx.new(|cx| WebViewPanel::new(window, cx));
+            workspace.add_item_to_active_pane(Box::new(item), None, true, window, cx);
         });
     })
     .detach();
 }
 
 pub struct WebViewPanel {
-    position: DockPosition,
-    size: Pixels,
     focus_handle: FocusHandle,
     webview: Option<Arc<dyn Webview>>,
     ipc_dispatcher: IpcDispatcher,
     ipc_task: Option<Task<()>>,
-    is_active: bool,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
 impl WebViewPanel {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut ipc_dispatcher = IpcDispatcher::new();
 
-        // Register built-in IPC methods that all webview panels have access to.
         ipc_dispatcher.register("panel.getInfo", |_params| {
             Ok(serde_json::json!({ "name": "Analytics Dashboard", "version": "0.1.0" }))
         });
@@ -73,16 +67,16 @@ impl WebViewPanel {
             Ok(serde_json::json!({ "sessions": sessions }))
         });
 
-        Self {
-            position: DockPosition::Bottom,
-            size: px(320.),
+        let mut this = Self {
             focus_handle: cx.focus_handle(),
             webview: None,
             ipc_dispatcher,
             ipc_task: None,
-            is_active: false,
             _subscriptions: Vec::new(),
-        }
+        };
+
+        this.schedule_webview_creation(window, cx);
+        this
     }
 
     /// Schedule webview creation for the next frame. Webview creation is
@@ -101,7 +95,6 @@ impl WebViewPanel {
             return;
         }
 
-        // Extract the HWND and build config while we have access to Window + Context.
         let hwnd = window.get_raw_handle();
         let theme_script = theme_bridge::build_theme_css_script(cx.theme().colors());
 
@@ -114,17 +107,12 @@ impl WebViewPanel {
             initialization_scripts: vec![theme_script],
         };
 
-        // Spawn the actual wry creation on the foreground thread. The key is
-        // that `create_webview` runs in the async body — not inside `update` —
-        // so there is no active entity borrow when wry pumps the message loop.
         let task = cx.spawn(async move |this, cx| {
-            // This runs on the GPUI foreground thread, outside any entity update.
             let creation_result = webview_runtime::create_webview(hwnd, config);
 
             match creation_result {
                 Ok((webview, ipc_receiver)) => {
                     let webview: Arc<dyn Webview> = Arc::from(webview);
-                    // Show the webview immediately since we're active
                     webview.set_visible(true).log_err();
 
                     this.update(cx, |this, cx| {
@@ -140,7 +128,6 @@ impl WebViewPanel {
                 }
             }
         });
-        // Store the task so it's not dropped (which would cancel it).
         self.ipc_task = Some(task);
     }
 
@@ -177,7 +164,6 @@ impl WebViewPanel {
         self.ipc_task = Some(task);
     }
 
-    /// Re-inject theme CSS variables into the webview after a theme change.
     pub fn apply_theme(&self, cx: &App) {
         if let Some(webview) = &self.webview {
             let script = theme_bridge::build_theme_css_script(cx.theme().colors());
@@ -192,78 +178,26 @@ impl Focusable for WebViewPanel {
     }
 }
 
-impl EventEmitter<PanelEvent> for WebViewPanel {}
+impl EventEmitter<ItemEvent> for WebViewPanel {}
 
-impl Panel for WebViewPanel {
-    fn persistent_name() -> &'static str {
-        "WebViewPanel"
+impl Item for WebViewPanel {
+    type Event = ItemEvent;
+
+    fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
+        "Analytics Dashboard".into()
     }
 
-    fn panel_key() -> &'static str {
-        "WebViewPanel"
+    fn tab_icon(&self, _window: &Window, _cx: &App) -> Option<ui::Icon> {
+        Some(ui::Icon::new(ui::IconName::ToolWeb))
     }
 
-    fn position(&self, _window: &Window, _cx: &App) -> DockPosition {
-        self.position
-    }
-
-    fn position_is_valid(&self, position: DockPosition) -> bool {
-        matches!(
-            position,
-            DockPosition::Left | DockPosition::Right | DockPosition::Bottom
-        )
-    }
-
-    fn set_position(
-        &mut self,
-        position: DockPosition,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.position = position;
-        cx.notify();
-    }
-
-    fn size(&self, _window: &Window, _cx: &App) -> Pixels {
-        self.size
-    }
-
-    fn set_size(&mut self, size: Option<Pixels>, _window: &mut Window, cx: &mut Context<Self>) {
-        self.size = size.unwrap_or(px(320.));
-        cx.notify();
-    }
-
-    fn icon(&self, _window: &Window, _cx: &App) -> Option<ui::IconName> {
-        Some(ui::IconName::ToolWeb)
-    }
-
-    fn icon_tooltip(&self, _window: &Window, _cx: &App) -> Option<&'static str> {
-        Some("Analytics Dashboard")
-    }
-
-    fn toggle_action(&self) -> Box<dyn Action> {
-        Box::new(ToggleFocus)
-    }
-
-    fn activation_priority(&self) -> u32 {
-        200
-    }
-
-    fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.is_active = active;
-        if active {
-            self.schedule_webview_creation(window, cx);
-        }
-        if let Some(webview) = &self.webview {
-            webview.set_visible(active).log_err();
-        }
+    fn to_item_events(event: &Self::Event, f: &mut dyn FnMut(ItemEvent)) {
+        f(event.clone());
     }
 }
 
 impl Render for WebViewPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Clone the Arc so the paint closure can call set_bounds without
-        // borrowing self. This is safe because set_bounds is a &self method.
         let webview = self.webview.clone();
 
         v_flex()
@@ -272,17 +206,12 @@ impl Render for WebViewPanel {
             .size_full()
             .bg(cx.theme().colors().panel_background)
             .child(
-                // The canvas element occupies the full panel area. During the
-                // paint phase, it positions the OS-level webview to match the
-                // canvas bounds (converted to physical pixels).
                 canvas(
                     |_bounds, _window, _cx| {},
                     move |bounds, _, _window, _cx| {
                         let Some(webview) = &webview else {
                             return;
                         };
-                        // Pass logical coordinates directly — wry handles DPI
-                        // scaling internally via the webview's own DPI awareness.
                         let x = bounds.origin.x.as_f32();
                         let y = bounds.origin.y.as_f32();
                         let width = bounds.size.width.as_f32();
