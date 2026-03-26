@@ -393,6 +393,8 @@ impl TerminalBuilder {
             matches: Vec::new(),
 
             selection_head: None,
+            content_generation: 0,
+            last_synced_generation: 0,
             breadcrumb_text: String::new(),
             scroll_px: px(0.),
             next_link_id: 0,
@@ -623,6 +625,8 @@ impl TerminalBuilder {
                 matches: Vec::new(),
 
                 selection_head: None,
+                content_generation: 0,
+                last_synced_generation: 0,
                 breadcrumb_text: String::new(),
                 scroll_px: px(0.),
                 next_link_id: 0,
@@ -792,7 +796,7 @@ impl Deref for IndexedCell {
 // TODO: Un-pub
 #[derive(Clone)]
 pub struct TerminalContent {
-    pub cells: Vec<IndexedCell>,
+    pub cells: Arc<Vec<IndexedCell>>,
     pub mode: TermMode,
     pub display_offset: usize,
     pub selection_text: Option<String>,
@@ -803,6 +807,7 @@ pub struct TerminalContent {
     pub last_hovered_word: Option<HoveredWord>,
     pub scrolled_to_top: bool,
     pub scrolled_to_bottom: bool,
+    pub generation: usize,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -829,6 +834,7 @@ impl Default for TerminalContent {
             last_hovered_word: None,
             scrolled_to_top: false,
             scrolled_to_bottom: false,
+            generation: 0,
         }
     }
 }
@@ -859,6 +865,8 @@ pub struct Terminal {
     pub last_content: TerminalContent,
     pub selection_head: Option<AlacPoint>,
 
+    content_generation: usize,
+    last_synced_generation: usize,
     pub breadcrumb_text: String,
     title_override: Option<String>,
     scroll_px: Pixels,
@@ -1617,25 +1625,40 @@ impl Terminal {
     pub fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let term = self.term.clone();
         let mut terminal = term.lock_unfair();
-        //Note that the ordering of events matters for event processing
+        let had_events = !self.events.is_empty();
         while let Some(e) = self.events.pop_front() {
             self.process_terminal_event(&e, &mut terminal, window, cx)
         }
 
-        self.last_content = Self::make_content(&terminal, &self.last_content);
+        if had_events {
+            self.content_generation = self.content_generation.wrapping_add(1);
+        }
+
+        let generation_changed = self.content_generation != self.last_synced_generation;
+        self.last_content =
+            Self::make_content(&terminal, &self.last_content, generation_changed, self.content_generation);
+        self.last_synced_generation = self.content_generation;
     }
 
-    fn make_content(term: &Term<ZedListener>, last_content: &TerminalContent) -> TerminalContent {
+    fn make_content(
+        term: &Term<ZedListener>,
+        last_content: &TerminalContent,
+        rebuild_cells: bool,
+        generation: usize,
+    ) -> TerminalContent {
         let content = term.renderable_content();
 
-        // Pre-allocate with estimated size to reduce reallocations
-        let estimated_size = content.display_iter.size_hint().0;
-        let mut cells = Vec::with_capacity(estimated_size);
-
-        cells.extend(content.display_iter.map(|ic| IndexedCell {
-            point: ic.point,
-            cell: ic.cell.clone(),
-        }));
+        let cells = if rebuild_cells {
+            let estimated_size = content.display_iter.size_hint().0;
+            let mut new_cells = Vec::with_capacity(estimated_size);
+            new_cells.extend(content.display_iter.map(|ic| IndexedCell {
+                point: ic.point,
+                cell: ic.cell.clone(),
+            }));
+            Arc::new(new_cells)
+        } else {
+            Arc::clone(&last_content.cells)
+        };
 
         let selection_text = if content.selection.is_some() {
             term.selection_to_string()
@@ -1655,6 +1678,7 @@ impl Terminal {
             last_hovered_word: last_content.last_hovered_word.clone(),
             scrolled_to_top: content.display_offset == term.history_size(),
             scrolled_to_bottom: content.display_offset == 0,
+            generation,
         }
     }
 
@@ -2637,7 +2661,7 @@ mod tests {
 
         terminal.update(cx, |terminal, _cx| {
             let term_lock = terminal.term.lock();
-            terminal.last_content = Terminal::make_content(&term_lock, &terminal.last_content);
+            terminal.last_content = Terminal::make_content(&term_lock, &terminal.last_content, true, 0);
             drop(term_lock);
 
             let terminal_bounds = TerminalBounds::new(
@@ -3024,7 +3048,7 @@ mod tests {
         // Get the content by directly accessing the term
         let content = terminal.update(cx, |terminal, _cx| {
             let term = terminal.term.lock_unfair();
-            Terminal::make_content(&term, &terminal.last_content)
+            Terminal::make_content(&term, &terminal.last_content, true, 0)
         });
 
         // If LF is properly converted to CRLF, each line should start at column 0
@@ -3072,7 +3096,7 @@ mod tests {
         // Get the content by directly accessing the term
         let content = terminal.update(cx, |terminal, _cx| {
             let term = terminal.term.lock_unfair();
-            Terminal::make_content(&term, &terminal.last_content)
+            Terminal::make_content(&term, &terminal.last_content, true, 0)
         });
 
         let cells = &content.cells;
@@ -3114,7 +3138,7 @@ mod tests {
         // Get the content by directly accessing the term
         let content = terminal.update(cx, |terminal, _cx| {
             let term = terminal.term.lock_unfair();
-            Terminal::make_content(&term, &terminal.last_content)
+            Terminal::make_content(&term, &terminal.last_content, true, 0)
         });
 
         let cells = &content.cells;

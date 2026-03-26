@@ -22,6 +22,7 @@ use serde::Deserialize;
 use settings::{Settings, SettingsStore, TerminalBlink, WorkingDirectory};
 use std::{
     any::Any,
+    cell::RefCell,
     cmp,
     ops::{Range, RangeInclusive},
     path::{Path, PathBuf},
@@ -40,7 +41,7 @@ use terminal::{
     },
     terminal_settings::{CursorShape, TerminalSettings},
 };
-use terminal_element::TerminalElement;
+use terminal_element::{CachedGridLayout, TerminalElement};
 use terminal_panel::TerminalPanel;
 use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
 use terminal_scrollbar::TerminalScrollHandle;
@@ -132,6 +133,7 @@ pub struct TerminalView {
     context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
     cursor_shape: CursorShape,
     blink_manager: Entity<BlinkManager>,
+    blink_epoch: usize,
     mode: TerminalMode,
     blinking_terminal_enabled: bool,
     needs_serialize: bool,
@@ -145,6 +147,7 @@ pub struct TerminalView {
     scroll_handle: TerminalScrollHandle,
     ime_state: Option<ImeState>,
     self_handle: WeakEntity<Self>,
+    pub grid_layout_cache: Rc<RefCell<Option<CachedGridLayout>>>,
     rename_editor: Option<Entity<Editor>>,
     rename_editor_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
@@ -265,7 +268,10 @@ impl TerminalView {
         let subscriptions = vec![
             focus_in,
             focus_out,
-            cx.observe(&blink_manager, |_, _, cx| cx.notify()),
+            cx.observe(&blink_manager, |this, _, cx| {
+                this.blink_epoch = this.blink_epoch.wrapping_add(1);
+                cx.notify();
+            }),
             cx.observe_global::<SettingsStore>(Self::settings_changed),
         ];
 
@@ -278,6 +284,7 @@ impl TerminalView {
             context_menu: None,
             cursor_shape,
             blink_manager,
+            blink_epoch: 0,
             blinking_terminal_enabled: false,
             hover: None,
             hover_tooltip_update: Task::ready(()),
@@ -291,6 +298,7 @@ impl TerminalView {
             custom_title: None,
             ime_state: None,
             self_handle: cx.entity().downgrade(),
+            grid_layout_cache: Rc::new(RefCell::new(None)),
             rename_editor: None,
             rename_editor_subscription: None,
             _subscriptions: subscriptions,

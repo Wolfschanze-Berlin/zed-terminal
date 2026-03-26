@@ -2,11 +2,11 @@ use editor::{CursorLayout, EditorSettings, HighlightedRange, HighlightedRangeLin
 use gpui::{
     AbsoluteLength, AnyElement, App, AvailableSpace, Bounds, ContentMask, Context, DispatchPhase,
     Element, ElementId, Entity, FocusHandle, Font, FontFeatures, FontStyle, FontWeight,
-    GlobalElementId, HighlightStyle, Hitbox, Hsla, InputHandler, InteractiveElement, Interactivity,
-    IntoElement, LayoutId, Length, ModifiersChangedEvent, MouseButton, MouseMoveEvent, Pixels,
-    Point, StatefulInteractiveElement, StrikethroughStyle, Styled, TextRun, TextStyle,
-    UTF16Selection, UnderlineStyle, WeakEntity, WhiteSpace, Window, div, fill, point, px, relative,
-    size,
+    GlobalElementId, GlyphRasterData, HighlightStyle, Hitbox, Hsla, InputHandler,
+    InteractiveElement, Interactivity, IntoElement, LayoutId, Length, ModifiersChangedEvent,
+    MouseButton, MouseMoveEvent, Pixels, Point, ShapedLine, StatefulInteractiveElement,
+    StrikethroughStyle, Styled, TextRun, TextStyle, UTF16Selection, UnderlineStyle, WeakEntity,
+    WhiteSpace, Window, div, fill, point, px, relative, size,
 };
 use itertools::Itertools;
 use language::CursorShape;
@@ -35,6 +35,35 @@ use std::mem;
 use std::{fmt::Debug, ops::RangeInclusive, rc::Rc};
 
 use crate::{BlockContext, BlockProperties, ContentMode, TerminalMode, TerminalView};
+
+pub struct CachedGridLayout {
+    pub batched_text_runs: Vec<BatchedTextRun>,
+    pub rects: Vec<LayoutRect>,
+    generation: usize,
+    display_offset: usize,
+    hovered_word_id: Option<usize>,
+    visible_bounds: Bounds<Pixels>,
+    prepaint_origin: Point<Pixels>,
+}
+
+impl CachedGridLayout {
+    fn is_valid(
+        &self,
+        generation: usize,
+        display_offset: usize,
+        hovered_word_id: Option<usize>,
+        visible_bounds: Bounds<Pixels>,
+    ) -> bool {
+        self.generation == generation
+            && self.display_offset == display_offset
+            && self.hovered_word_id == hovered_word_id
+            && self.visible_bounds == visible_bounds
+    }
+
+    fn is_prepaint_valid(&self, prepaint_origin: Point<Pixels>) -> bool {
+        self.prepaint_origin == prepaint_origin
+    }
+}
 
 /// The information generated during layout that is necessary for painting.
 pub struct LayoutState {
@@ -79,14 +108,45 @@ impl DisplayCursor {
     }
 }
 
-/// A batched text run that combines multiple adjacent cells with the same style
-#[derive(Debug)]
+/// A batched text run that combines multiple adjacent cells with the same style.
+///
+/// During prepaint, `prepaint_shape` is called to shape the text and pre-compute
+/// raster bounds for all glyphs. During paint, `paint` uses the pre-computed data
+/// to skip per-glyph raster bounds lookups.
 pub struct BatchedTextRun {
     pub start_point: AlacPoint<i32, i32>,
     pub text: String,
     pub cell_count: usize,
     pub style: TextRun,
     pub font_size: AbsoluteLength,
+    shaped_line: Option<ShapedLine>,
+    raster_data: Option<GlyphRasterData>,
+}
+
+impl Clone for BatchedTextRun {
+    fn clone(&self) -> Self {
+        BatchedTextRun {
+            start_point: self.start_point,
+            text: self.text.clone(),
+            cell_count: self.cell_count,
+            style: self.style.clone(),
+            font_size: self.font_size,
+            shaped_line: self.shaped_line.clone(),
+            raster_data: self.raster_data.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for BatchedTextRun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BatchedTextRun")
+            .field("start_point", &self.start_point)
+            .field("text", &self.text)
+            .field("cell_count", &self.cell_count)
+            .field("style", &self.style)
+            .field("font_size", &self.font_size)
+            .finish()
+    }
 }
 
 impl BatchedTextRun {
@@ -96,7 +156,7 @@ impl BatchedTextRun {
         style: TextRun,
         font_size: AbsoluteLength,
     ) -> Self {
-        let mut text = String::with_capacity(256); // Pre-allocate for typical line length
+        let mut text = String::with_capacity(256);
         text.push(c);
         BatchedTextRun {
             start_point,
@@ -104,6 +164,8 @@ impl BatchedTextRun {
             cell_count: 1,
             style,
             font_size,
+            shaped_line: None,
+            raster_data: None,
         }
     }
 
@@ -133,6 +195,32 @@ impl BatchedTextRun {
         self.style.len += c.len_utf8();
     }
 
+    fn prepaint_shape(
+        &mut self,
+        origin: Point<Pixels>,
+        dimensions: &TerminalBounds,
+        window: &Window,
+    ) {
+        let pos = Point::new(
+            origin.x + self.start_point.column as f32 * dimensions.cell_width,
+            origin.y + self.start_point.line as f32 * dimensions.line_height,
+        );
+
+        let shaped = window.text_system().shape_line(
+            self.text.clone().into(),
+            self.font_size.to_pixels(window.rem_size()),
+            std::slice::from_ref(&self.style),
+            Some(dimensions.cell_width),
+        );
+
+        let raster_data = shaped
+            .compute_glyph_raster_data(pos, dimensions.line_height, window)
+            .log_err();
+
+        self.shaped_line = Some(shaped);
+        self.raster_data = raster_data;
+    }
+
     pub fn paint(
         &self,
         origin: Point<Pixels>,
@@ -145,22 +233,42 @@ impl BatchedTextRun {
             origin.y + self.start_point.line as f32 * dimensions.line_height,
         );
 
-        let _ = window
-            .text_system()
-            .shape_line(
-                self.text.clone().into(),
-                self.font_size.to_pixels(window.rem_size()),
-                std::slice::from_ref(&self.style),
-                Some(dimensions.cell_width),
-            )
-            .paint(
-                pos,
-                dimensions.line_height,
-                gpui::TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
+        if let Some(shaped_line) = &self.shaped_line {
+            if let Some(raster_data) = &self.raster_data {
+                shaped_line
+                    .paint_with_raster_data(pos, dimensions.line_height, raster_data, window, cx)
+                    .log_err();
+            } else {
+                shaped_line
+                    .paint(
+                        pos,
+                        dimensions.line_height,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    )
+                    .log_err();
+            }
+        } else {
+            window
+                .text_system()
+                .shape_line(
+                    self.text.clone().into(),
+                    self.font_size.to_pixels(window.rem_size()),
+                    std::slice::from_ref(&self.style),
+                    Some(dimensions.cell_width),
+                )
+                .paint(
+                    pos,
+                    dimensions.line_height,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                )
+                .log_err();
+        }
     }
 }
 
@@ -1026,10 +1134,12 @@ impl Element for TerminalElement {
                     cursor_char,
                     selection,
                     cursor,
+                    generation,
                     ..
                 } = &self.terminal.read(cx).last_content;
                 let mode = *mode;
                 let display_offset = *display_offset;
+                let generation = *generation;
 
                 // searches, highlights to a single range representations
                 let mut relative_highlighted_ranges = Vec::new();
@@ -1056,17 +1166,28 @@ impl Element for TerminalElement {
                 let visible_bounds = window.content_mask().bounds;
                 let intersection = visible_bounds.intersect(&bounds);
 
-                // If the terminal is entirely outside the viewport, skip all cell processing.
-                // This handles the case where the terminal has been scrolled past (above or
-                // below the viewport), similar to the editor fix in PR #45077 where start_row
-                // could exceed max_row when the editor was positioned above the viewport.
-                let (rects, batched_text_runs) = if intersection.size.height <= px(0.)
+                let hovered_word_id = last_hovered_word.as_ref().map(|hw| hw.id);
+                let grid_layout_cache = self.terminal_view.read(cx).grid_layout_cache.clone();
+                let prepaint_origin = bounds.origin
+                    + Point::new(gutter, px(0.))
+                    - Point::new(px(0.), scroll_top);
+
+                let cached_layout = grid_layout_cache.borrow_mut().take();
+                let cache_valid = cached_layout
+                    .as_ref()
+                    .is_some_and(|c| c.is_valid(generation, display_offset, hovered_word_id, visible_bounds));
+                let prepaint_valid = cache_valid
+                    && cached_layout
+                        .as_ref()
+                        .is_some_and(|c| c.is_prepaint_valid(prepaint_origin));
+
+                let (rects, mut batched_text_runs) = if intersection.size.height <= px(0.)
                     || intersection.size.width <= px(0.)
                 {
                     (Vec::new(), Vec::new())
+                } else if let Some(cached) = cached_layout.filter(|_| cache_valid) {
+                    (cached.rects, cached.batched_text_runs)
                 } else if intersection == bounds {
-                    // Fast path: terminal fully visible, no clipping needed.
-                    // Avoid grouping/allocation overhead by streaming cells directly.
                     TerminalElement::layout_grid(
                         cells.iter().cloned(),
                         0,
@@ -1078,11 +1199,6 @@ impl Element for TerminalElement {
                         cx,
                     )
                 } else {
-                    // Calculate which screen rows are visible based on pixel positions.
-                    // This works for both Scrollable and Inline modes because we filter
-                    // by screen position (enumerated line group index), not by the cell's
-                    // internal line number (which can be negative in Scrollable mode for
-                    // scrollback history).
                     let rows_above_viewport =
                         f32::from((intersection.top() - bounds.top()).max(px(0.)) / line_height_px)
                             as usize;
@@ -1090,9 +1206,6 @@ impl Element for TerminalElement {
                         f32::from((intersection.size.height / line_height_px).ceil()) as usize + 1;
 
                     TerminalElement::layout_grid(
-                        // Group cells by line and filter to only the visible screen rows.
-                        // skip() and take() work on enumerated line groups (screen position),
-                        // making this work regardless of the actual cell.point.line values.
                         cells
                             .iter()
                             .chunk_by(|c| c.point.line)
@@ -1110,6 +1223,22 @@ impl Element for TerminalElement {
                         cx,
                     )
                 };
+
+                if !prepaint_valid {
+                    for batch in &mut batched_text_runs {
+                        batch.prepaint_shape(prepaint_origin, &dimensions, window);
+                    }
+                }
+
+                *grid_layout_cache.borrow_mut() = Some(CachedGridLayout {
+                    batched_text_runs: batched_text_runs.clone(),
+                    rects: rects.clone(),
+                    generation,
+                    display_offset,
+                    hovered_word_id,
+                    visible_bounds,
+                    prepaint_origin,
+                });
 
                 // Layout cursor. Rectangle is used for IME, so we should lay it out even
                 // if we don't end up showing it.
