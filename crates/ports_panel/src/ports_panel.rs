@@ -7,6 +7,7 @@ use gpui::{
     Focusable, Subscription, WeakEntity, actions,
 };
 use parking_lot::Mutex;
+use remote::RemoteConnectionOptions;
 use settings_content::SshPortForwardOption;
 use ssh_panel::{ConnectionState, DetectedPort, SshPanel, SshPanelEvent};
 use ui::{Tooltip, prelude::*};
@@ -175,13 +176,39 @@ impl PortsPanel {
     ) -> anyhow::Result<Entity<Self>> {
         workspace.update_in(&mut cx, |workspace, _window, cx| {
             let ssh_panel = workspace.panel::<SshPanel>(cx);
+
+            // Check if this is a remote workspace to pre-select the host
+            let remote_host_name = workspace
+                .project()
+                .read(cx)
+                .remote_client()
+                .and_then(|client| {
+                    let opts = client.read(cx).connection_options();
+                    if let RemoteConnectionOptions::Ssh(ssh_opts) = &opts {
+                        ssh_opts
+                            .nickname
+                            .clone()
+                            .unwrap_or_else(|| ssh_opts.host.to_string())
+                            .into()
+                    } else {
+                        None
+                    }
+                });
+
             cx.new(|cx| {
                 let mut panel = Self::new(ssh_panel, cx);
-                // If already connected (e.g., remote window), start polling
-                if !panel.connected_hosts(cx).is_empty() {
-                    if panel.selected_host.is_none() {
-                        panel.selected_host = panel.connected_hosts(cx).into_iter().next();
-                    }
+                // If already connected (e.g., remote window), set host and start polling
+                let connected = panel.connected_hosts(cx);
+                if !connected.is_empty() {
+                    // Prefer the remote host name from the connection, fall back to first connected
+                    panel.selected_host = remote_host_name
+                        .and_then(|name| {
+                            connected
+                                .iter()
+                                .find(|h| **h == name)
+                                .cloned()
+                        })
+                        .or_else(|| connected.into_iter().next());
                     panel.start_port_polling(cx);
                 }
                 panel
@@ -387,6 +414,32 @@ impl PortsPanel {
             ssh_panel.update(cx, |panel, cx| {
                 panel.detect_remote_ports(index, cx);
             });
+        } else {
+            // Host not in SSH config (e.g., connected via raw IP from remote window).
+            // Run detection using the host name directly as SSH destination.
+            let host_for_scan = host_name.clone();
+            cx.spawn(async move |this, cx: &mut AsyncApp| {
+                let detected = cx
+                    .background_spawn(async move {
+                        let mut cmd = util::command::new_command("ssh");
+                        cmd.arg(&host_for_scan);
+                        cmd.arg("ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null");
+                        cmd.stdout(util::command::Stdio::piped());
+                        cmd.stderr(util::command::Stdio::null());
+
+                        let output = cmd.output().await?;
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        anyhow::Ok(ssh_panel::parse_listening_ports(&stdout))
+                    })
+                    .await?;
+
+                this.update(cx, |this, cx| {
+                    this.handle_detected_ports_and_auto_forward(&host_name, &detected, cx);
+                    cx.notify();
+                })?;
+                anyhow::Ok(())
+            })
+            .detach_and_log_err(cx);
         }
     }
 

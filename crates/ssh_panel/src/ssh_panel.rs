@@ -340,7 +340,7 @@ impl SshPanel {
 
 /// Parse `ss -tlnp` or `netstat -tlnp` output to extract listening ports.
 /// Filters out well-known system ports (< 1024).
-fn parse_listening_ports(output: &str) -> Vec<DetectedPort> {
+pub fn parse_listening_ports(output: &str) -> Vec<DetectedPort> {
     let mut ports = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
