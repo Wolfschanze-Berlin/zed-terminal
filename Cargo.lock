@@ -13980,6 +13980,7 @@ dependencies = [
  "gpui",
  "log",
  "parking_lot",
+ "project",
  "recent_projects",
  "remote",
  "serde",

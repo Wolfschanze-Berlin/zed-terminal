@@ -19,6 +19,7 @@ dirs.workspace = true
 gpui.workspace = true
 log.workspace = true
 parking_lot.workspace = true
+project.workspace = true
 recent_projects.workspace = true
 remote.workspace = true
 ui.workspace = true
