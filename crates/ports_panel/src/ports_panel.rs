@@ -106,6 +106,9 @@ fn save_forwards(forwards: &[PortForwardEntry]) {
     }
 }
 
+/// Interval between automatic port scans on the remote host
+const PORT_SCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct PortsPanel {
     focus_handle: FocusHandle,
     width: Option<Pixels>,
@@ -117,7 +120,9 @@ pub struct PortsPanel {
     form_remote_port: String,
     selected_host: Option<String>,
     detected_ports: collections::HashMap<String, Vec<DetectedPort>>,
+    auto_forward: bool,
     ssh_panel: Option<Entity<SshPanel>>,
+    _poll_task: Option<gpui::Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -152,12 +157,14 @@ impl PortsPanel {
             forwards,
             tunnels: collections::HashMap::default(),
             detected_ports: collections::HashMap::default(),
+            auto_forward: true,
             show_add_form: false,
             form_local_port: String::new(),
             form_remote_host: String::new(),
             form_remote_port: String::new(),
             selected_host: None,
             ssh_panel,
+            _poll_task: None,
             _subscriptions: subscriptions,
         }
     }
@@ -168,7 +175,17 @@ impl PortsPanel {
     ) -> anyhow::Result<Entity<Self>> {
         workspace.update_in(&mut cx, |workspace, _window, cx| {
             let ssh_panel = workspace.panel::<SshPanel>(cx);
-            cx.new(|cx| Self::new(ssh_panel, cx))
+            cx.new(|cx| {
+                let mut panel = Self::new(ssh_panel, cx);
+                // If already connected (e.g., remote window), start polling
+                if !panel.connected_hosts(cx).is_empty() {
+                    if panel.selected_host.is_none() {
+                        panel.selected_host = panel.connected_hosts(cx).into_iter().next();
+                    }
+                    panel.start_port_polling(cx);
+                }
+                panel
+            })
         })
     }
 
@@ -184,17 +201,20 @@ impl PortsPanel {
                     self.selected_host = Some(host.name.clone());
                 }
                 self.auto_start_forwards_for_host(&host.name, cx);
-                // Auto-scan for remote listening ports
-                self.scan_remote_ports(cx);
+                self.start_port_polling(cx);
             }
             SshPanelEvent::Disconnected(host) => {
                 self.stop_forwards_for_host(&host.name, cx);
                 if self.selected_host.as_deref() == Some(&host.name) {
                     self.selected_host = self.connected_hosts(cx).into_iter().next();
                 }
+                // Stop polling if no hosts remain connected
+                if self.connected_hosts(cx).is_empty() {
+                    self._poll_task = None;
+                }
             }
             SshPanelEvent::RemotePortsDetected { host_name, ports } => {
-                self.handle_detected_ports(host_name, ports);
+                self.handle_detected_ports_and_auto_forward(host_name, ports, cx);
             }
         }
         cx.notify();
@@ -242,9 +262,75 @@ impl PortsPanel {
         cx.notify();
     }
 
-    fn handle_detected_ports(&mut self, host_name: &str, ports: &[DetectedPort]) {
+    fn start_port_polling(&mut self, cx: &mut Context<Self>) {
+        // Don't start if already polling
+        if self._poll_task.is_some() {
+            return;
+        }
+
+        self._poll_task = Some(cx.spawn(async move |this, cx: &mut AsyncApp| {
+            loop {
+                cx.background_spawn(async {
+                    smol::Timer::after(PORT_SCAN_INTERVAL).await;
+                })
+                .await;
+
+                let should_continue = this
+                    .update(cx, |this, cx| {
+                        if this.connected_hosts(cx).is_empty() {
+                            return false;
+                        }
+                        this.scan_remote_ports(cx);
+                        true
+                    })
+                    .unwrap_or(false);
+
+                if !should_continue {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn handle_detected_ports_and_auto_forward(
+        &mut self,
+        host_name: &str,
+        ports: &[DetectedPort],
+        cx: &mut Context<Self>,
+    ) {
+        let previous = self.detected_ports.get(host_name).cloned();
         self.detected_ports
             .insert(host_name.to_string(), ports.to_vec());
+
+        if !self.auto_forward {
+            return;
+        }
+
+        // Find newly appeared ports (not in previous scan)
+        let previous_ports: std::collections::HashSet<u16> = previous
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|d| d.port)
+            .collect();
+
+        let already_forwarded: std::collections::HashSet<u16> = self
+            .forwards
+            .iter()
+            .filter(|f| f.host_name == host_name)
+            .map(|f| f.option.remote_port)
+            .collect();
+
+        let new_ports: Vec<u16> = ports
+            .iter()
+            .filter(|d| !previous_ports.contains(&d.port) && !already_forwarded.contains(&d.port))
+            .map(|d| d.port)
+            .collect();
+
+        for port in new_ports {
+            log::info!("Auto-forwarding newly detected port {} on {}", port, host_name);
+            self.add_detected_forward(host_name, port, cx);
+        }
     }
 
     fn add_detected_forward(
@@ -627,9 +713,30 @@ impl Render for PortsPanel {
                     .color(Color::Default),
             )
             .when(has_connections, |el| {
+                let auto_forward = self.auto_forward;
                 el.child(
                     h_flex()
                         .gap_1()
+                        .child(
+                            IconButton::new(
+                                "toggle-auto-forward",
+                                if auto_forward {
+                                    IconName::BoltFilled
+                                } else {
+                                    IconName::BoltOutlined
+                                },
+                            )
+                            .icon_size(IconSize::Small)
+                            .tooltip(Tooltip::text(if auto_forward {
+                                "Auto-forward: ON"
+                            } else {
+                                "Auto-forward: OFF"
+                            }))
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.auto_forward = !this.auto_forward;
+                                cx.notify();
+                            })),
+                        )
                         .child(
                             IconButton::new("scan-ports", IconName::MagnifyingGlass)
                                 .icon_size(IconSize::Small)
