@@ -395,6 +395,7 @@ impl TerminalBuilder {
             selection_head: None,
             content_generation: 0,
             last_synced_generation: 0,
+            wakeup_pending: false,
             breadcrumb_text: String::new(),
             scroll_px: px(0.),
             next_link_id: 0,
@@ -627,6 +628,7 @@ impl TerminalBuilder {
                 selection_head: None,
                 content_generation: 0,
                 last_synced_generation: 0,
+                wakeup_pending: false,
                 breadcrumb_text: String::new(),
                 scroll_px: px(0.),
                 next_link_id: 0,
@@ -867,6 +869,7 @@ pub struct Terminal {
 
     content_generation: usize,
     last_synced_generation: usize,
+    wakeup_pending: bool,
     pub breadcrumb_text: String,
     title_override: Option<String>,
     scroll_px: Pixels,
@@ -992,6 +995,7 @@ impl Terminal {
                 //NOOP, Handled in render
             }
             AlacTermEvent::Wakeup => {
+                self.wakeup_pending = true;
                 cx.emit(Event::Wakeup);
 
                 if let TerminalType::Pty { info, .. } = &self.terminal_type {
@@ -1630,8 +1634,9 @@ impl Terminal {
             self.process_terminal_event(&e, &mut terminal, window, cx)
         }
 
-        if had_events {
+        if had_events || self.wakeup_pending {
             self.content_generation = self.content_generation.wrapping_add(1);
+            self.wakeup_pending = false;
         }
 
         let generation_changed = self.content_generation != self.last_synced_generation;

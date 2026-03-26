@@ -41,7 +41,7 @@ use terminal::{
     },
     terminal_settings::{CursorShape, TerminalSettings},
 };
-use terminal_element::{CachedGridLayout, TerminalElement};
+use terminal_element::TerminalElement;
 use terminal_panel::TerminalPanel;
 use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
 use terminal_scrollbar::TerminalScrollHandle;
@@ -147,7 +147,6 @@ pub struct TerminalView {
     scroll_handle: TerminalScrollHandle,
     ime_state: Option<ImeState>,
     self_handle: WeakEntity<Self>,
-    pub grid_layout_cache: Rc<RefCell<Option<CachedGridLayout>>>,
     rename_editor: Option<Entity<Editor>>,
     rename_editor_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
@@ -298,7 +297,6 @@ impl TerminalView {
             custom_title: None,
             ime_state: None,
             self_handle: cx.entity().downgrade(),
-            grid_layout_cache: Rc::new(RefCell::new(None)),
             rename_editor: None,
             rename_editor_subscription: None,
             _subscriptions: subscriptions,

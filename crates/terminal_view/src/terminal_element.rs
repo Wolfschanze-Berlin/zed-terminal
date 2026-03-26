@@ -36,35 +36,6 @@ use std::{fmt::Debug, ops::RangeInclusive, rc::Rc};
 
 use crate::{BlockContext, BlockProperties, ContentMode, TerminalMode, TerminalView};
 
-pub struct CachedGridLayout {
-    pub batched_text_runs: Vec<BatchedTextRun>,
-    pub rects: Vec<LayoutRect>,
-    generation: usize,
-    display_offset: usize,
-    hovered_word_id: Option<usize>,
-    visible_bounds: Bounds<Pixels>,
-    prepaint_origin: Point<Pixels>,
-}
-
-impl CachedGridLayout {
-    fn is_valid(
-        &self,
-        generation: usize,
-        display_offset: usize,
-        hovered_word_id: Option<usize>,
-        visible_bounds: Bounds<Pixels>,
-    ) -> bool {
-        self.generation == generation
-            && self.display_offset == display_offset
-            && self.hovered_word_id == hovered_word_id
-            && self.visible_bounds == visible_bounds
-    }
-
-    fn is_prepaint_valid(&self, prepaint_origin: Point<Pixels>) -> bool {
-        self.prepaint_origin == prepaint_origin
-    }
-}
-
 /// The information generated during layout that is necessary for painting.
 pub struct LayoutState {
     hitbox: Hitbox,
@@ -1055,7 +1026,7 @@ impl Element for TerminalElement {
                 let player_color = theme.players().local();
                 let match_color = theme.colors().search_match_background;
                 let gutter;
-                let (dimensions, line_height_px) = {
+                let (dimensions, _line_height_px) = {
                     let rem_size = window.rem_size();
                     let font_pixels = text_style.font_size.to_pixels(rem_size);
                     let line_height = f32::from(font_pixels) * line_height;
@@ -1134,12 +1105,10 @@ impl Element for TerminalElement {
                     cursor_char,
                     selection,
                     cursor,
-                    generation,
                     ..
                 } = &self.terminal.read(cx).last_content;
                 let mode = *mode;
                 let display_offset = *display_offset;
-                let generation = *generation;
 
                 // searches, highlights to a single range representations
                 let mut relative_highlighted_ranges = Vec::new();
@@ -1155,90 +1124,16 @@ impl Element for TerminalElement {
 
                 let content_mode = self.terminal_view.read(cx).content_mode(window, cx);
 
-                // Calculate the intersection of the terminal's bounds with the current
-                // content mask (the visible viewport after all parent clipping).
-                // This allows us to only render cells that are actually visible, which is
-                // critical for performance when terminals are inside scrollable containers
-                // like the Agent Panel thread view.
-                //
-                // This optimization is analogous to the editor optimization in PR #45077
-                // which fixed performance issues with large AutoHeight editors inside Lists.
-                let visible_bounds = window.content_mask().bounds;
-                let intersection = visible_bounds.intersect(&bounds);
-
-                let hovered_word_id = last_hovered_word.as_ref().map(|hw| hw.id);
-                let grid_layout_cache = self.terminal_view.read(cx).grid_layout_cache.clone();
-                let prepaint_origin = bounds.origin
-                    + Point::new(gutter, px(0.))
-                    - Point::new(px(0.), scroll_top);
-
-                let cached_layout = grid_layout_cache.borrow_mut().take();
-                let cache_valid = cached_layout
-                    .as_ref()
-                    .is_some_and(|c| c.is_valid(generation, display_offset, hovered_word_id, visible_bounds));
-                let prepaint_valid = cache_valid
-                    && cached_layout
+                let (rects, batched_text_runs) = TerminalElement::layout_grid(
+                    cells.iter().cloned(),
+                    0,
+                    &text_style,
+                    last_hovered_word
                         .as_ref()
-                        .is_some_and(|c| c.is_prepaint_valid(prepaint_origin));
-
-                let (rects, mut batched_text_runs) = if intersection.size.height <= px(0.)
-                    || intersection.size.width <= px(0.)
-                {
-                    (Vec::new(), Vec::new())
-                } else if let Some(cached) = cached_layout.filter(|_| cache_valid) {
-                    (cached.rects, cached.batched_text_runs)
-                } else if intersection == bounds {
-                    TerminalElement::layout_grid(
-                        cells.iter().cloned(),
-                        0,
-                        &text_style,
-                        last_hovered_word
-                            .as_ref()
-                            .map(|last_hovered_word| (link_style, &last_hovered_word.word_match)),
-                        minimum_contrast,
-                        cx,
-                    )
-                } else {
-                    let rows_above_viewport =
-                        f32::from((intersection.top() - bounds.top()).max(px(0.)) / line_height_px)
-                            as usize;
-                    let visible_row_count =
-                        f32::from((intersection.size.height / line_height_px).ceil()) as usize + 1;
-
-                    TerminalElement::layout_grid(
-                        cells
-                            .iter()
-                            .chunk_by(|c| c.point.line)
-                            .into_iter()
-                            .skip(rows_above_viewport)
-                            .take(visible_row_count)
-                            .flat_map(|(_, line_cells)| line_cells)
-                            .cloned(),
-                        rows_above_viewport as i32,
-                        &text_style,
-                        last_hovered_word
-                            .as_ref()
-                            .map(|last_hovered_word| (link_style, &last_hovered_word.word_match)),
-                        minimum_contrast,
-                        cx,
-                    )
-                };
-
-                if !prepaint_valid {
-                    for batch in &mut batched_text_runs {
-                        batch.prepaint_shape(prepaint_origin, &dimensions, window);
-                    }
-                }
-
-                *grid_layout_cache.borrow_mut() = Some(CachedGridLayout {
-                    batched_text_runs: batched_text_runs.clone(),
-                    rects: rects.clone(),
-                    generation,
-                    display_offset,
-                    hovered_word_id,
-                    visible_bounds,
-                    prepaint_origin,
-                });
+                        .map(|last_hovered_word| (link_style, &last_hovered_word.word_match)),
+                    minimum_contrast,
+                    cx,
+                );
 
                 // Layout cursor. Rectangle is used for IME, so we should lay it out even
                 // if we don't end up showing it.
