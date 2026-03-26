@@ -1028,14 +1028,23 @@ impl Render for PortsPanel {
 
                 let is_active = entry.status == ForwardStatus::Active;
                 let hover_bg = cx.theme().colors().ghost_element_hover;
+                let click_local_port = entry.option.local_port;
 
                 let mut row = h_flex()
+                    .id(("forward-row", index))
                     .w_full()
                     .items_center()
                     .justify_between()
                     .px_2()
                     .py_1()
                     .hover(move |style| style.bg(hover_bg))
+                    .when(is_active, |el| {
+                        el.cursor_pointer().on_click(
+                            cx.listener(move |_this, _event, _window, cx| {
+                                cx.open_url(&format!("http://localhost:{}", click_local_port));
+                            }),
+                        )
+                    })
                     .child(
                         h_flex()
                             .gap_2()
