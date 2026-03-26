@@ -122,44 +122,40 @@ pub struct SshPanel {
 }
 
 impl SshPanel {
-    pub fn new(workspace: WeakEntity<Workspace>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        workspace: WeakEntity<Workspace>,
+        active_connection: Option<RemoteConnectionOptions>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let hosts = Self::load_ssh_hosts();
         let connection_store = Arc::new(Mutex::new(SshConnectionStore::default()));
 
-        // Detect if we're in a remote workspace and mark the host as connected
-        if let Some(workspace) = workspace.upgrade() {
-            let remote_connection = workspace.read(cx).project().read(cx).remote_client();
-            if let Some(remote_client) = remote_connection {
-                let options = remote_client.read(cx).connection_options();
-                if let RemoteConnectionOptions::Ssh(ssh_opts) = &options {
-                    let connected_host_str = ssh_opts.host.to_string();
-                    let nickname = ssh_opts.nickname.as_deref();
+        // If we're in a remote workspace, mark the host as connected
+        if let Some(RemoteConnectionOptions::Ssh(ssh_opts)) = &active_connection {
+            let connected_host_str = ssh_opts.host.to_string();
+            let nickname = ssh_opts.nickname.as_deref();
 
-                    // Find matching host by nickname, hostname, or host string
-                    let matched_name = hosts.iter().find_map(|h| {
-                        if nickname == Some(h.name.as_str()) {
-                            return Some(h.name.clone());
-                        }
-                        if h.hostname.as_deref() == Some(&connected_host_str) {
-                            return Some(h.name.clone());
-                        }
-                        if h.name == connected_host_str {
-                            return Some(h.name.clone());
-                        }
-                        None
-                    });
-
-                    if let Some(name) = matched_name {
-                        connection_store
-                            .lock()
-                            .set_state(&name, ConnectionState::Connected);
-                    } else {
-                        // Host not in ssh config — still mark the raw host as connected
-                        connection_store
-                            .lock()
-                            .set_state(&connected_host_str, ConnectionState::Connected);
-                    }
+            let matched_name = hosts.iter().find_map(|h| {
+                if nickname == Some(h.name.as_str()) {
+                    return Some(h.name.clone());
                 }
+                if h.hostname.as_deref() == Some(&connected_host_str) {
+                    return Some(h.name.clone());
+                }
+                if h.name == connected_host_str {
+                    return Some(h.name.clone());
+                }
+                None
+            });
+
+            if let Some(name) = matched_name {
+                connection_store
+                    .lock()
+                    .set_state(&name, ConnectionState::Connected);
+            } else {
+                connection_store
+                    .lock()
+                    .set_state(&connected_host_str, ConnectionState::Connected);
             }
         }
 
@@ -178,8 +174,16 @@ impl SshPanel {
         mut cx: AsyncWindowContext,
     ) -> anyhow::Result<Entity<Self>> {
         let workspace_weak = workspace.clone();
-        workspace.update_in(&mut cx, |_workspace, _window, cx| {
-            cx.new(|cx| Self::new(workspace_weak, cx))
+        workspace.update_in(&mut cx, |workspace, _window, cx| {
+            // Extract remote connection info before creating the panel entity
+            // to avoid double-borrowing the workspace
+            let active_connection = workspace
+                .project()
+                .read(cx)
+                .remote_client()
+                .map(|client| client.read(cx).connection_options());
+
+            cx.new(|cx| Self::new(workspace_weak, active_connection, cx))
         })
     }
 
