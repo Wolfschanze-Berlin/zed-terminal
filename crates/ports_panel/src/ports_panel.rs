@@ -616,6 +616,11 @@ impl PortsPanel {
                 actual_local_port, remote_host, remote_port
             );
 
+            log::info!(
+                "Starting SSH tunnel: -L {}:{} via {}",
+                actual_local_port, remote_port, ssh_destination
+            );
+
             let mut cmd = std::process::Command::new("ssh");
             cmd.arg("-N");
             cmd.arg("-L").arg(&forward_spec);
@@ -637,11 +642,9 @@ impl PortsPanel {
             cmd.stdout(std::process::Stdio::null());
             cmd.stderr(std::process::Stdio::piped());
 
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-            }
+            // Intentionally NOT using CREATE_NO_WINDOW — Win32-OpenSSH
+            // needs access to the SSH agent service pipe which may require
+            // a console context on some Windows configurations.
 
             let result = cmd.spawn().context("Failed to spawn SSH tunnel");
             let result = result.map(|child| (child, actual_local_port));
@@ -664,10 +667,11 @@ impl PortsPanel {
 
                     // Poll until tunnel is ready, process exits, or timeout (30s)
                     let poll_port = actual_local_port;
+                    let dest_for_log = ssh_destination.clone();
                     let error_msg = cx.background_spawn({
                         let child_arc = child_arc_clone.clone();
                         async move {
-                            for _ in 0..60 {
+                            for attempt in 0..60 {
                                 smol::Timer::after(std::time::Duration::from_millis(500)).await;
 
                                 // Check if process exited (error)
@@ -676,7 +680,11 @@ impl PortsPanel {
                                     .as_mut()
                                     .and_then(|c| c.try_wait().ok().flatten());
 
-                                if let Some(_status) = exit_info {
+                                if let Some(status) = exit_info {
+                                    log::warn!(
+                                        "SSH tunnel to {} exited with status {} after {}ms",
+                                        dest_for_log, status, (attempt + 1) * 500
+                                    );
                                     // Read stderr synchronously (std::process)
                                     let stderr_output = child_arc
                                         .lock()
@@ -686,6 +694,7 @@ impl PortsPanel {
                                             use std::io::Read;
                                             let mut buf = String::new();
                                             stderr.read_to_string(&mut buf).ok()?;
+                                            log::warn!("SSH tunnel stderr: {}", buf.trim());
                                             if buf.trim().is_empty() {
                                                 None
                                             } else {
@@ -699,9 +708,17 @@ impl PortsPanel {
 
                                 // Check if SSH has bound the local port
                                 if std::net::TcpListener::bind(("127.0.0.1", poll_port)).is_err() {
+                                    log::info!(
+                                        "SSH tunnel to {} port {} ready after {}ms",
+                                        dest_for_log, poll_port, (attempt + 1) * 500
+                                    );
                                     return None; // Tunnel is ready
                                 }
                             }
+                            log::error!(
+                                "SSH tunnel to {} port {} timed out after 30s (process still running)",
+                                dest_for_log, poll_port
+                            );
                             Some("Tunnel startup timed out (30s)".to_string())
                         }
                     })
