@@ -3,7 +3,7 @@ use std::io::Write;
 use crate::{
     RemoteArch, RemoteOs, RemotePlatform,
     json_log::LogRecord,
-    protocol::{MESSAGE_LEN_SIZE, message_len_from_buffer, read_message_with_len, write_message},
+    protocol::{MESSAGE_LEN_SIZE, message_len_from_buffer, write_message_compressed},
 };
 use anyhow::{Context as _, Result};
 use futures::{
@@ -11,6 +11,7 @@ use futures::{
     channel::mpsc::{Sender, UnboundedReceiver, UnboundedSender},
 };
 use gpui::{AppContext as _, AsyncApp, Task};
+use prost::Message as _;
 use rpc::proto::Envelope;
 use util::command::Child;
 
@@ -80,6 +81,7 @@ fn handle_rpc_messages_over_child_process_stdio(
     let child_stdin = remote_proxy_process.stdin.take().unwrap();
 
     let mut stdin_buffer = Vec::new();
+    let mut stdin_compress_buffer = Vec::new();
     let mut stdout_buffer = Vec::new();
     let mut stderr_buffer = Vec::new();
     let mut stderr_offset = 0;
@@ -87,14 +89,27 @@ fn handle_rpc_messages_over_child_process_stdio(
     // #7: Message batching — drain all queued messages before writing to reduce
     // syscall overhead. After the first blocking recv, collect any additional
     // messages that arrived while we were writing the previous batch.
+    // #5: zstd compression for messages above 256 bytes.
     let stdin_task = cx.background_spawn(async move {
         let mut child_stdin = futures::io::BufWriter::new(child_stdin);
         while let Some(outgoing) = outgoing_rx.next().await {
-            write_message(&mut child_stdin, &mut stdin_buffer, outgoing).await?;
+            write_message_compressed(
+                &mut child_stdin,
+                &mut stdin_buffer,
+                &mut stdin_compress_buffer,
+                outgoing,
+            )
+            .await?;
 
             // Drain any additional queued messages without blocking
             while let Ok(Some(outgoing)) = outgoing_rx.try_next() {
-                write_message(&mut child_stdin, &mut stdin_buffer, outgoing).await?;
+                write_message_compressed(
+                    &mut child_stdin,
+                    &mut stdin_buffer,
+                    &mut stdin_compress_buffer,
+                    outgoing,
+                )
+                .await?;
             }
             // Flush the batch
             child_stdin.flush().await?;
@@ -105,6 +120,7 @@ fn handle_rpc_messages_over_child_process_stdio(
     // #6: BufReader — reduce syscall count by reading from a kernel buffer
     // instead of issuing separate read() calls for the 4-byte length prefix
     // and each message body.
+    // Reads support both compressed and uncompressed messages via the flag byte.
     let stdout_task = cx.background_spawn({
         let mut connection_activity_tx = connection_activity_tx.clone();
         async move {
@@ -122,9 +138,29 @@ fn handle_rpc_messages_over_child_process_stdio(
                 }
 
                 let message_len = message_len_from_buffer(&stdout_buffer);
-                let envelope =
-                    read_message_with_len(&mut child_stdout, &mut stdout_buffer, message_len)
-                        .await?;
+
+                // Read the full payload (flag byte + data)
+                stdout_buffer.resize(message_len as usize, 0);
+                child_stdout.read_exact(&mut stdout_buffer).await?;
+
+                let first_byte = stdout_buffer[0];
+
+                let envelope = match first_byte {
+                    0x00 => {
+                        // New format: uncompressed with flag byte
+                        Envelope::decode(&stdout_buffer[1..])?
+                    }
+                    0x01 => {
+                        // New format: zstd compressed
+                        let decompressed = zstd::decode_all(&stdout_buffer[1..])?;
+                        Envelope::decode(decompressed.as_slice())?
+                    }
+                    _ => {
+                        // Legacy format: raw protobuf (no flag byte)
+                        Envelope::decode(stdout_buffer.as_slice())?
+                    }
+                };
+
                 connection_activity_tx.try_send(()).ok();
                 incoming_tx.unbounded_send(envelope).ok();
             }

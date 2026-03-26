@@ -33,7 +33,7 @@ use release_channel::{AppCommitSha, AppVersion, RELEASE_CHANNEL, ReleaseChannel}
 use remote::{
     RemoteClient,
     json_log::LogRecord,
-    protocol::{read_message, write_message},
+    protocol::{read_message_compressed, write_message_compressed},
     proxy::ProxyLaunchError,
 };
 use reqwest_client::ReqwestClient;
@@ -352,12 +352,20 @@ fn start_server(
             };
 
             let mut input_buffer = Vec::new();
+            let mut input_decompress_buffer = Vec::new();
             let mut output_buffer = Vec::new();
+            let mut output_compress_buffer = Vec::new();
 
             let (mut stdin_msg_tx, mut stdin_msg_rx) = mpsc::unbounded::<Envelope>();
             cx.background_spawn(async move {
                 loop {
-                    match read_message(&mut stdin_stream, &mut input_buffer).await {
+                    match read_message_compressed(
+                        &mut stdin_stream,
+                        &mut input_buffer,
+                        &mut input_decompress_buffer,
+                    )
+                    .await
+                    {
                         Ok(msg) => {
                             if (stdin_msg_tx.send(msg).await).is_err() {
                                 log::info!("stdin message channel closed, stopping stdin reader");
@@ -397,7 +405,12 @@ fn start_server(
                         };
 
                         if let Err(error) =
-                            write_message(&mut stdout_stream, &mut output_buffer, message).await
+                            write_message_compressed(
+                                &mut stdout_stream,
+                                &mut output_buffer,
+                                &mut output_compress_buffer,
+                                message,
+                            ).await
                         {
                             log::error!("failed to write stdout message: {:?}", error);
                             break;
