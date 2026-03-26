@@ -84,18 +84,37 @@ fn is_common_dev_port(port: u16) -> bool {
     )
 }
 
+/// Tracks ports reserved by concurrent tunnel starts to avoid collisions.
+fn reserved_ports() -> &'static std::sync::Mutex<std::collections::HashSet<u16>> {
+    use std::sync::OnceLock;
+    static RESERVED: OnceLock<std::sync::Mutex<std::collections::HashSet<u16>>> = OnceLock::new();
+    RESERVED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
 /// Find an available local port, starting from `preferred` and incrementing.
 fn find_available_port(preferred: u16) -> u16 {
+    let mut reserved = reserved_ports().lock().unwrap_or_else(|e| e.into_inner());
+
     for port in preferred..=preferred.saturating_add(100) {
-        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+        if !reserved.contains(&port)
+            && std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+        {
+            reserved.insert(port);
             return port;
         }
     }
-    // Last resort: let the OS pick
-    std::net::TcpListener::bind(("127.0.0.1", 0))
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
         .and_then(|l| l.local_addr())
         .map(|a| a.port())
-        .unwrap_or(preferred)
+        .unwrap_or(preferred);
+    reserved.insert(port);
+    port
+}
+
+fn release_port(port: u16) {
+    if let Ok(mut reserved) = reserved_ports().lock() {
+        reserved.remove(&port);
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -779,6 +798,7 @@ impl PortsPanel {
         if let Some(tunnel) = self.tunnels.remove(&key) {
             tunnel.kill();
         }
+        release_port(entry.option.local_port);
         entry.status = ForwardStatus::Inactive;
         cx.notify();
     }
@@ -786,6 +806,7 @@ impl PortsPanel {
     fn remove_forward(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.forwards.len() {
             let entry = &self.forwards[index];
+            let local_port = entry.option.local_port;
             let key = forward_key(
                 &entry.host_name,
                 entry.option.local_port,
@@ -794,6 +815,7 @@ impl PortsPanel {
             if let Some(tunnel) = self.tunnels.remove(&key) {
                 tunnel.kill();
             }
+            release_port(local_port);
             self.forwards.remove(index);
             save_forwards(&self.forwards);
             cx.notify();
@@ -805,6 +827,19 @@ impl PortsPanel {
             .iter()
             .map(|entry| entry.option.clone())
             .collect()
+    }
+}
+
+impl Drop for PortsPanel {
+    fn drop(&mut self) {
+        // Kill all tunnel processes on shutdown
+        for (_, tunnel) in self.tunnels.drain() {
+            tunnel.kill();
+        }
+        // Release all reserved ports
+        for entry in &self.forwards {
+            release_port(entry.option.local_port);
+        }
     }
 }
 
