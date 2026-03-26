@@ -1,0 +1,7 @@
+{
+  "name": "cortex-ssh-remote-specialist",
+  "purpose": "SSH panel, ports panel, remote connections, tunnels, and port forwarding",
+  "generated_by": "verrueckt-cortex",
+  "generated_at": "2026-03-26",
+  "domain": "ssh-remote"
+}

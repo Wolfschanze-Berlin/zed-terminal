@@ -1,0 +1,7 @@
+{
+  "name": "cortex-terminal-specialist",
+  "purpose": "Terminal rendering, alacritty_terminal integration, and terminal performance",
+  "generated_by": "verrueckt-cortex",
+  "generated_at": "2026-03-26",
+  "domain": "terminal"
+}

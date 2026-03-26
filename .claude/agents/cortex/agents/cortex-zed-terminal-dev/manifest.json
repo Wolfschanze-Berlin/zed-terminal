@@ -1,0 +1,12 @@
+{
+  "name": "zed-terminal-dev",
+  "purpose": "General development assistant for the zed-terminal project",
+  "generated_by": "verrueckt-cortex",
+  "generated_at": "2026-03-26",
+  "specialists": [
+    "cortex-terminal-specialist",
+    "cortex-gpui-specialist",
+    "cortex-workspace-specialist",
+    "cortex-ssh-remote-specialist"
+  ]
+}

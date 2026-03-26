@@ -1,0 +1,7 @@
+{
+  "name": "cortex-gpui-specialist",
+  "purpose": "GPUI framework patterns, Entity model, rendering, elements, and concurrency",
+  "generated_by": "verrueckt-cortex",
+  "generated_at": "2026-03-26",
+  "domain": "gpui"
+}

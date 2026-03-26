@@ -1,0 +1,7 @@
+{
+  "name": "cortex-workspace-specialist",
+  "purpose": "Workspace architecture, Panel trait, docks, sidebar, and window management",
+  "generated_by": "verrueckt-cortex",
+  "generated_at": "2026-03-26",
+  "domain": "workspace"
+}
