@@ -1,3 +1,4 @@
+mod analytics_dashboard;
 mod theme_bridge;
 
 use std::sync::Arc;
@@ -42,7 +43,34 @@ impl WebViewPanel {
 
         // Register built-in IPC methods that all webview panels have access to.
         ipc_dispatcher.register("panel.getInfo", |_params| {
-            Ok(serde_json::json!({ "name": "WebViewPanel", "version": "0.1.0" }))
+            Ok(serde_json::json!({ "name": "Analytics Dashboard", "version": "0.1.0" }))
+        });
+
+        // Analytics: read session data from ~/.agentics/sessions/*.jsonl
+        ipc_dispatcher.register("analytics.getSessionData", |_params| {
+            let sessions_dir = dirs::home_dir()
+                .map(|h| h.join(".agentics").join("sessions"))
+                .unwrap_or_default();
+
+            let mut sessions = Vec::new();
+            if sessions_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().is_some_and(|e| e == "jsonl") {
+                            if let Ok(content) = std::fs::read_to_string(&path) {
+                                for line in content.lines() {
+                                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
+                                    {
+                                        sessions.push(val);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(serde_json::json!({ "sessions": sessions }))
         });
 
         Self {
@@ -79,15 +107,7 @@ impl WebViewPanel {
 
         let config = WebviewConfig {
             content: webview_runtime::WebviewContent::Html(
-                r#"<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"></head>
-<body style="margin:0;font-family:system-ui,sans-serif;background:var(--zed-panel-background,#1e1e2e);color:var(--zed-text,#cdd6f4);display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column">
-<h2>Webview Panel Ready</h2>
-<p style="color:var(--zed-text-muted,#6c7086)">IPC bridge active. Theme CSS variables injected.</p>
-</body>
-</html>"#
-                    .into(),
+                analytics_dashboard::ANALYTICS_HTML.into(),
             ),
             allow_remote_urls: false,
             allowed_hosts: Vec::new(),
@@ -218,7 +238,7 @@ impl Panel for WebViewPanel {
     }
 
     fn icon_tooltip(&self, _window: &Window, _cx: &App) -> Option<&'static str> {
-        Some("Webview Extension")
+        Some("Analytics Dashboard")
     }
 
     fn toggle_action(&self) -> Box<dyn Action> {

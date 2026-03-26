@@ -14,6 +14,7 @@ path = "src/webview_panel.rs"
 
 [dependencies]
 anyhow.workspace = true
+dirs.workspace = true
 gpui.workspace = true
 log.workspace = true
 panel.workspace = true
