@@ -635,6 +635,14 @@ fn initialize_panels(
         let ports_panel = PortsPanel::load(workspace_handle.clone(), cx.clone());
         add_panel_when_ready(ports_panel, workspace_handle.clone(), cx.clone()).await;
 
+        // Webview panel — created synchronously (no async loading needed)
+        workspace_handle
+            .update_in(cx, |workspace, window, cx| {
+                let panel = cx.new(|cx| webview_panel::WebViewPanel::new(cx));
+                workspace.add_panel(panel, window, cx);
+            })
+            .log_err();
+
         anyhow::Ok(())
     })
 }

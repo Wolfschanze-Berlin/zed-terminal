@@ -686,6 +686,7 @@ fn main() {
         git_graph::init(cx);
         ssh_panel::init(cx);
         ports_panel::init(cx);
+        webview_panel::init(cx);
         analytics_panel::init(cx);
         markdown_preview::init(cx);
         csv_preview::init(cx);

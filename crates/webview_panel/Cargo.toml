@@ -1,0 +1,27 @@
+[package]
+name = "webview_panel"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+name = "webview_panel"
+path = "src/webview_panel.rs"
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+log.workspace = true
+panel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+settings.workspace = true
+theme.workspace = true
+ui.workspace = true
+util.workspace = true
+webview_runtime.workspace = true
+workspace.workspace = true

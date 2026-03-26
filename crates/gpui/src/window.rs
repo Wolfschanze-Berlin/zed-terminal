@@ -3492,7 +3492,7 @@ impl Window {
         Ok(())
     }
 
-    fn should_use_subpixel_rendering(&self, font_id: FontId, font_size: Pixels) -> bool {
+    pub(crate) fn should_use_subpixel_rendering(&self, font_id: FontId, font_size: Pixels) -> bool {
         if self.platform_window.background_appearance() != WindowBackgroundAppearance::Opaque {
             return false;
         }
@@ -5450,6 +5450,14 @@ impl AnyWindowHandle {
             .context("the type of the window's root view has changed")?;
 
         cx.read_window(&view, read)
+    }
+}
+
+impl Window {
+    /// Returns the native Win32 HWND for this window.
+    #[cfg(target_os = "windows")]
+    pub fn get_raw_handle(&self) -> windows::Win32::Foundation::HWND {
+        self.platform_window.get_raw_handle()
     }
 }
 
