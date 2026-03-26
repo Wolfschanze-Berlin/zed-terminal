@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/activity_indicator",
+    "crates/analytics_panel",
     "crates/askpass",
     "crates/assets",
     "crates/auto_update",
@@ -194,6 +195,7 @@ acp_thread = { path = "crates/acp_thread" }
 action_log = { path = "crates/action_log" }
 agent = { path = "crates/agent" }
 activity_indicator = { path = "crates/activity_indicator" }
+analytics_panel = { path = "crates/analytics_panel" }
 agent_ui = { path = "crates/agent_ui" }
 agent_settings = { path = "crates/agent_settings" }
 agent_servers = { path = "crates/agent_servers" }

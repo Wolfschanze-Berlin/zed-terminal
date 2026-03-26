@@ -429,6 +429,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e9d4ee0d472d1cd2e28c97dfa124b3d8d992e10eb0a035f33f5d12e3a177ba3b"
 
 [[package]]
+name = "analytics_panel"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs 4.0.0",
+ "gpui",
+ "log",
+ "serde",
+ "serde_json",
+ "ui",
+ "workspace",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -19083,6 +19098,7 @@ name = "zed"
 version = "0.230.0"
 dependencies = [
  "activity_indicator",
+ "analytics_panel",
  "anyhow",
  "ashpd",
  "askpass",

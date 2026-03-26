@@ -54,6 +54,7 @@ required-features = ["visual-tests"]
 
 [dependencies]
 activity_indicator.workspace = true
+analytics_panel.workspace = true
 anyhow.workspace = true
 askpass.workspace = true
 assets.workspace = true
