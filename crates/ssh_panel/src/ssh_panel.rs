@@ -355,10 +355,12 @@ pub fn parse_listening_ports(output: &str) -> Vec<DetectedPort> {
         let mut process = None;
 
         for field in line.split_whitespace() {
-            // Look for address:port patterns
+            // Look for address:port patterns.
+            // Filter to 1024..32767 to exclude both system ports and
+            // ephemeral ports (32768+) that are typically client connections.
             if let Some(colon_pos) = field.rfind(':') {
                 if let Ok(p) = field[colon_pos + 1..].parse::<u16>() {
-                    if p >= 1024 {
+                    if p >= 1024 && p < 32768 {
                         port = Some(p);
                     }
                 }

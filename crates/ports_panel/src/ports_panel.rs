@@ -537,16 +537,17 @@ impl PortsPanel {
             .unwrap_or("localhost");
         let remote_port = entry.option.remote_port;
 
-        let ssh_host = self
+        // Look up the SSH config entry, or fall back to using the host name directly
+        let ssh_config_host = self
             .ssh_panel
             .as_ref()
             .and_then(|p| p.read(cx).host_by_name(&host_name).cloned());
 
-        let Some(ssh_host) = ssh_host else {
-            entry.status = ForwardStatus::Failed("Host not found".to_string());
-            cx.notify();
-            return;
-        };
+        let ssh_destination = ssh_config_host
+            .as_ref()
+            .map(|h| h.name.clone())
+            .unwrap_or_else(|| host_name.clone());
+        let ssh_port = ssh_config_host.as_ref().and_then(|h| h.port);
 
         entry.status = ForwardStatus::Starting;
         cx.notify();
@@ -577,7 +578,7 @@ impl PortsPanel {
                 cmd.arg("-L");
                 cmd.arg(&forward_spec);
 
-                if let Some(port) = ssh_host.port {
+                if let Some(port) = ssh_port {
                     cmd.arg("-p");
                     cmd.arg(port.to_string());
                 }
@@ -586,7 +587,7 @@ impl PortsPanel {
                 cmd.arg("-o");
                 cmd.arg("ExitOnForwardFailure=yes");
 
-                cmd.arg(&ssh_host.name);
+                cmd.arg(&ssh_destination);
 
                 cmd.stdin(util::command::Stdio::null());
                 cmd.stdout(util::command::Stdio::null());
