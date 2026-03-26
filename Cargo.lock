@@ -18205,6 +18205,7 @@ name = "webview_panel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dirs 4.0.0",
  "gpui",
  "log",
  "panel",

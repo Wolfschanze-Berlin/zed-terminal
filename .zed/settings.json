@@ -1,4 +1,8 @@
 {
+  "terminal": {
+    "shell": "system"
+  },
+  "project_name": "zed-terminal",
   "languages": {
     "Markdown": {
       "tab_size": 2,
