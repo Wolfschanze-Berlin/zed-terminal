@@ -37,6 +37,9 @@ pub struct SshHost {
     pub hostname: Option<String>,
     pub user: Option<String>,
     pub port: Option<u16>,
+    pub identity_file: Option<String>,
+    pub proxy_jump: Option<String>,
+    pub forward_agent: bool,
 }
 
 impl SshHost {
@@ -52,6 +55,29 @@ impl SshHost {
         match &self.user {
             Some(user) => format!("{}@{}", user, self.hostname.as_deref().unwrap_or(&self.name)),
             None => self.hostname.as_deref().unwrap_or(&self.name).to_string(),
+        }
+    }
+
+    pub fn detail_line(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(proxy) = &self.proxy_jump {
+            parts.push(format!("via {}", proxy));
+        }
+        if let Some(identity) = &self.identity_file {
+            // Show just the filename, not full path
+            let filename = std::path::Path::new(identity)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| identity.clone());
+            parts.push(format!("key: {}", filename));
+        }
+        if self.forward_agent {
+            parts.push("agent-fwd".to_string());
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" | "))
         }
     }
 }
@@ -415,6 +441,36 @@ fn parse_ssh_config(content: &str) -> Vec<SshHost> {
     let mut current_hostname: Option<String> = None;
     let mut current_user: Option<String> = None;
     let mut current_port: Option<u16> = None;
+    let mut current_identity_file: Option<String> = None;
+    let mut current_proxy_jump: Option<String> = None;
+    let mut current_forward_agent = false;
+
+    let flush = |names: &mut Vec<String>,
+                 hosts: &mut Vec<SshHost>,
+                 hostname: &mut Option<String>,
+                 user: &mut Option<String>,
+                 port: &mut Option<u16>,
+                 identity_file: &mut Option<String>,
+                 proxy_jump: &mut Option<String>,
+                 forward_agent: &mut bool| {
+        for name in names.drain(..) {
+            hosts.push(SshHost {
+                name,
+                hostname: hostname.clone(),
+                user: user.clone(),
+                port: *port,
+                identity_file: identity_file.clone(),
+                proxy_jump: proxy_jump.clone(),
+                forward_agent: *forward_agent,
+            });
+        }
+        *hostname = None;
+        *user = None;
+        *port = None;
+        *identity_file = None;
+        *proxy_jump = None;
+        *forward_agent = false;
+    };
 
     for line in content.lines() {
         let line = line.trim();
@@ -429,19 +485,16 @@ fn parse_ssh_config(content: &str) -> Vec<SshHost> {
         let value = parts.next().map(|v| v.trim()).unwrap_or("");
 
         if keyword.eq_ignore_ascii_case("Host") {
-            if !current_names.is_empty() {
-                for name in current_names.drain(..) {
-                    hosts.push(SshHost {
-                        name,
-                        hostname: current_hostname.clone(),
-                        user: current_user.clone(),
-                        port: current_port,
-                    });
-                }
-            }
-            current_hostname = None;
-            current_user = None;
-            current_port = None;
+            flush(
+                &mut current_names,
+                &mut hosts,
+                &mut current_hostname,
+                &mut current_user,
+                &mut current_port,
+                &mut current_identity_file,
+                &mut current_proxy_jump,
+                &mut current_forward_agent,
+            );
             current_names = value
                 .split_whitespace()
                 .filter(|h| !h.contains('*') && !h.starts_with('!'))
@@ -453,19 +506,25 @@ fn parse_ssh_config(content: &str) -> Vec<SshHost> {
             current_user = Some(value.to_string());
         } else if keyword.eq_ignore_ascii_case("Port") {
             current_port = value.parse().ok();
+        } else if keyword.eq_ignore_ascii_case("IdentityFile") {
+            current_identity_file = Some(value.to_string());
+        } else if keyword.eq_ignore_ascii_case("ProxyJump") {
+            current_proxy_jump = Some(value.to_string());
+        } else if keyword.eq_ignore_ascii_case("ForwardAgent") {
+            current_forward_agent = value.eq_ignore_ascii_case("yes");
         }
     }
 
-    if !current_names.is_empty() {
-        for name in current_names {
-            hosts.push(SshHost {
-                name,
-                hostname: current_hostname.clone(),
-                user: current_user.clone(),
-                port: current_port,
-            });
-        }
-    }
+    flush(
+        &mut current_names,
+        &mut hosts,
+        &mut current_hostname,
+        &mut current_user,
+        &mut current_port,
+        &mut current_identity_file,
+        &mut current_proxy_jump,
+        &mut current_forward_agent,
+    );
 
     hosts
 }
@@ -585,6 +644,8 @@ impl Render for SshPanel {
                     .rounded_full()
                     .bg(status_color);
 
+                let detail_line = host.detail_line();
+
                 let host_label = h_flex()
                     .gap_2()
                     .items_center()
@@ -596,6 +657,13 @@ impl Render for SshPanel {
                                 this.child(
                                     Label::new(subtitle)
                                         .size(LabelSize::Small)
+                                        .color(Color::Muted),
+                                )
+                            })
+                            .when_some(detail_line, |this, detail| {
+                                this.child(
+                                    Label::new(detail)
+                                        .size(LabelSize::XSmall)
                                         .color(Color::Muted),
                                 )
                             }),
