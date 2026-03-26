@@ -49,7 +49,7 @@ struct PortForwardEntry {
 
 /// Tracks running SSH tunnel processes. Each tunnel is an `ssh -N -L ...` subprocess.
 struct TunnelProcess {
-    child: Arc<Mutex<Option<util::command::Child>>>,
+    child: Arc<Mutex<Option<std::process::Child>>>,
 }
 
 impl TunnelProcess {
@@ -587,7 +587,7 @@ impl PortsPanel {
         let key = forward_key(&host_name, local_port, remote_port);
         let key_for_task = key.clone();
 
-        let child_arc: Arc<Mutex<Option<util::command::Child>>> = Arc::new(Mutex::new(None));
+        let child_arc: Arc<Mutex<Option<std::process::Child>>> = Arc::new(Mutex::new(None));
         let child_arc_clone = child_arc.clone();
 
         self.tunnels.insert(
@@ -598,8 +598,8 @@ impl PortsPanel {
         );
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
+            // Spawn the SSH tunnel on a background thread using std::process
             let result = cx.background_spawn(async move {
-                // Find an available local port, starting from the requested one
                 let actual_local_port = find_available_port(local_port);
 
                 let forward_spec = format!(
@@ -607,10 +607,9 @@ impl PortsPanel {
                     actual_local_port, remote_host, remote_port
                 );
 
-                let mut cmd = util::command::new_command("ssh");
+                let mut cmd = std::process::Command::new("ssh");
                 cmd.arg("-N");
-                cmd.arg("-L");
-                cmd.arg(&forward_spec);
+                cmd.arg("-L").arg(&forward_spec);
                 cmd.arg("-o").arg("ExitOnForwardFailure=yes");
                 cmd.arg("-o").arg("ServerAliveInterval=15");
                 cmd.arg("-o").arg("ServerAliveCountMax=3");
@@ -625,9 +624,15 @@ impl PortsPanel {
 
                 cmd.arg(&ssh_destination);
 
-                cmd.stdin(util::command::Stdio::null());
-                cmd.stdout(util::command::Stdio::null());
-                cmd.stderr(util::command::Stdio::piped());
+                cmd.stdin(std::process::Stdio::null());
+                cmd.stdout(std::process::Stdio::null());
+                cmd.stderr(std::process::Stdio::piped());
+
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+                }
 
                 let child = cmd.spawn().context("Failed to spawn SSH tunnel")?;
                 anyhow::Ok((child, actual_local_port))
@@ -638,7 +643,6 @@ impl PortsPanel {
                 Ok((child, actual_local_port)) => {
                     *child_arc_clone.lock() = Some(child);
 
-                    // Update the entry's local port if we had to use a different one
                     if actual_local_port != local_port {
                         this.update(cx, |this, cx| {
                             if let Some(entry) = this.forwards.iter_mut().find(|f| {
@@ -651,8 +655,7 @@ impl PortsPanel {
                         })?;
                     }
 
-                    // Poll until the tunnel is ready, the process exits, or we timeout.
-                    // Check every 500ms for up to 30 seconds.
+                    // Poll until tunnel is ready, process exits, or timeout (30s)
                     let poll_port = actual_local_port;
                     let error_msg = cx.background_spawn({
                         let child_arc = child_arc_clone.clone();
@@ -661,35 +664,35 @@ impl PortsPanel {
                                 smol::Timer::after(std::time::Duration::from_millis(500)).await;
 
                                 // Check if process exited (error)
-                                let exited = child_arc
+                                let exit_info = child_arc
                                     .lock()
                                     .as_mut()
-                                    .map(|c| c.try_status().ok().flatten().is_some())
-                                    .unwrap_or(true);
+                                    .and_then(|c| c.try_wait().ok().flatten());
 
-                                if exited {
-                                    // Read stderr for error details
-                                    let stderr_handle = child_arc
+                                if let Some(_status) = exit_info {
+                                    // Read stderr synchronously (std::process)
+                                    let stderr_output = child_arc
                                         .lock()
                                         .as_mut()
-                                        .and_then(|c| c.stderr.take());
-                                    if let Some(mut stderr) = stderr_handle {
-                                        use smol::io::AsyncReadExt;
-                                        let mut buf = String::new();
-                                        let _ = stderr.read_to_string(&mut buf).await;
-                                        if !buf.trim().is_empty() {
-                                            let short = buf.trim().lines().last()
-                                                .unwrap_or(buf.trim());
-                                            return Some(short.to_string());
-                                        }
-                                    }
-                                    return Some("SSH tunnel exited unexpectedly".to_string());
+                                        .and_then(|c| c.stderr.take())
+                                        .and_then(|mut stderr| {
+                                            use std::io::Read;
+                                            let mut buf = String::new();
+                                            stderr.read_to_string(&mut buf).ok()?;
+                                            if buf.trim().is_empty() {
+                                                None
+                                            } else {
+                                                Some(buf.trim().lines().last()
+                                                    .unwrap_or(buf.trim()).to_string())
+                                            }
+                                        });
+                                    return Some(stderr_output
+                                        .unwrap_or_else(|| "SSH tunnel exited".to_string()));
                                 }
 
-                                // Check if SSH has bound the local port.
-                                // If we can't bind it ourselves, SSH has it.
+                                // Check if SSH has bound the local port
                                 if std::net::TcpListener::bind(("127.0.0.1", poll_port)).is_err() {
-                                    return None; // SSH has bound the port — tunnel is ready
+                                    return None; // Tunnel is ready
                                 }
                             }
                             Some("Tunnel startup timed out (30s)".to_string())
@@ -703,14 +706,13 @@ impl PortsPanel {
                                 == key_for_task
                         }) {
                             if let Some(err) = error_msg {
-                                let short = err.lines().last().unwrap_or(&err);
-                                entry.status = ForwardStatus::Failed(short.to_string());
+                                entry.status = ForwardStatus::Failed(err);
                                 this.tunnels.remove(&key_for_task);
                             } else {
                                 entry.status = ForwardStatus::Active;
                                 log::info!(
                                     "Port forward active: localhost:{} -> {}",
-                                    local_port, remote_port
+                                    actual_local_port, remote_port
                                 );
                             }
                         }
