@@ -4464,7 +4464,19 @@ impl LspStore {
         })
         .detach();
 
-        self.detect_language_for_buffer(buffer, cx);
+        let detected = self.detect_language_for_buffer(buffer, cx);
+        {
+            let buf = buffer.read(cx);
+            let lang = buf.language();
+            let has_grammar = lang.map(|l| l.grammar().is_some()).unwrap_or(false);
+            log::info!(
+                "DEBUG SYNTAX: buffer={:?}, detected={}, language={:?}, has_grammar={}",
+                buf.file().map(|f| f.path().as_unix_str().to_string()),
+                detected.is_some(),
+                lang.map(|l| l.name()),
+                has_grammar,
+            );
+        }
         if let Some(local) = self.as_local_mut() {
             local.initialize_buffer(buffer, cx);
         }
@@ -4710,6 +4722,11 @@ impl LspStore {
                             )
                         });
 
+                        log::info!(
+                            "DEBUG SYNTAX: maintain_buffer_languages retry: {} plain_text buffers, {} unknown_injection buffers",
+                            plain_text_buffers.len(),
+                            buffers_with_unknown_injections.len(),
+                        );
                         for buffer in plain_text_buffers {
                             this.detect_language_for_buffer(&buffer, cx);
                             if let Some(local) = this.as_local_mut() {
@@ -4748,11 +4765,22 @@ impl LspStore {
         let content = buffer.as_rope();
         let available_language = self.languages.language_for_file(file, Some(content), cx);
         if let Some(available_language) = &available_language {
-            if let Some(Ok(Ok(new_language))) = self
+            let load_result = self
                 .languages
                 .load_language(available_language)
-                .now_or_never()
-            {
+                .now_or_never();
+            log::info!(
+                "DEBUG SYNTAX: detect_language file={:?}, available={:?}, now_or_never={}",
+                file.path().as_unix_str(),
+                available_language.name(),
+                match &load_result {
+                    Some(Ok(Ok(lang))) => format!("loaded(grammar={})", lang.grammar().is_some()),
+                    Some(Ok(Err(e))) => format!("err({e})"),
+                    Some(Err(_)) => "channel_err".to_string(),
+                    None => "not_ready".to_string(),
+                }
+            );
+            if let Some(Ok(Ok(new_language))) = load_result {
                 self.set_language_for_buffer(buffer_handle, new_language, cx);
             }
         } else {
