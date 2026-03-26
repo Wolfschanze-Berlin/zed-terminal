@@ -36,6 +36,29 @@ use std::{fmt::Debug, ops::RangeInclusive, rc::Rc};
 
 use crate::{BlockContext, BlockProperties, ContentMode, TerminalMode, TerminalView};
 
+/// Per-line cached layout: the cells that produced this line's layout
+/// and the resulting text runs and background rects.
+#[derive(Clone)]
+pub struct CachedLineLayout {
+    cells: Vec<IndexedCell>,
+    batched_text_runs: Vec<BatchedTextRun>,
+    rects: Vec<LayoutRect>,
+}
+
+/// Cache of per-line layout results for dirty-line tracking.
+/// Only lines whose cells have changed are re-laid out.
+pub struct LineLayoutCache {
+    lines: Vec<(i32, CachedLineLayout)>,
+    display_offset: usize,
+    hovered_word_id: Option<usize>,
+}
+
+impl LineLayoutCache {
+    fn is_usable(&self, display_offset: usize, hovered_word_id: Option<usize>) -> bool {
+        self.display_offset == display_offset && self.hovered_word_id == hovered_word_id
+    }
+}
+
 /// The information generated during layout that is necessary for painting.
 pub struct LayoutState {
     hitbox: Hitbox,
@@ -403,176 +426,149 @@ impl TerminalElement {
 
     //Vec<Range<AlacPoint>> -> Clip out the parts of the ranges
 
+    /// Layout a single line of terminal cells into text runs and background rects.
+    fn layout_line(
+        alac_line: i32,
+        line_cells: impl Iterator<Item = IndexedCell>,
+        text_style: &TextStyle,
+        hyperlink: Option<(HighlightStyle, &RangeInclusive<AlacPoint>)>,
+        minimum_contrast: f32,
+        theme: &Theme,
+    ) -> (Vec<LayoutRect>, Vec<BatchedTextRun>, Vec<IndexedCell>) {
+        let mut batched_runs = Vec::new();
+        let mut rects = Vec::new();
+        let mut current_batch: Option<BatchedTextRun> = None;
+        let mut cells_snapshot = Vec::new();
+        let mut previous_cell_had_extras = false;
+
+        for cell in line_cells {
+            cells_snapshot.push(cell.clone());
+
+            let mut fg = cell.fg;
+            let mut bg = cell.bg;
+            if cell.flags.contains(Flags::INVERSE) {
+                mem::swap(&mut fg, &mut bg);
+            }
+
+            if !matches!(bg, Named(NamedColor::Background)) {
+                let color = convert_color(&bg, theme);
+                let col = cell.point.column.0 as i32;
+                rects.push(LayoutRect::new(AlacPoint::new(alac_line, col), 1, color));
+            }
+
+            if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                continue;
+            }
+            if cell.c == ' ' && previous_cell_had_extras {
+                previous_cell_had_extras = false;
+                continue;
+            }
+            previous_cell_had_extras =
+                matches!(cell.zerowidth(), Some(chars) if !chars.is_empty());
+
+            if !is_blank(&cell) {
+                let cell_style = TerminalElement::cell_style(
+                    &cell, fg, bg, theme, text_style, hyperlink, minimum_contrast,
+                );
+                let cell_point = AlacPoint::new(alac_line, cell.point.column.0 as i32);
+                let zero_width_chars = cell.zerowidth();
+
+                if let Some(ref mut batch) = current_batch {
+                    if batch.can_append(&cell_style)
+                        && batch.start_point.line == cell_point.line
+                        && batch.start_point.column + batch.cell_count as i32 == cell_point.column
+                    {
+                        batch.append_char(cell.c);
+                        if let Some(chars) = zero_width_chars {
+                            batch.append_zero_width_chars(chars);
+                        }
+                    } else {
+                        batched_runs.push(current_batch.take().expect("batch exists"));
+                        let mut new_batch = BatchedTextRun::new_from_char(
+                            cell_point, cell.c, cell_style, text_style.font_size,
+                        );
+                        if let Some(chars) = zero_width_chars {
+                            new_batch.append_zero_width_chars(chars);
+                        }
+                        current_batch = Some(new_batch);
+                    }
+                } else {
+                    let mut new_batch = BatchedTextRun::new_from_char(
+                        cell_point, cell.c, cell_style, text_style.font_size,
+                    );
+                    if let Some(chars) = zero_width_chars {
+                        new_batch.append_zero_width_chars(chars);
+                    }
+                    current_batch = Some(new_batch);
+                }
+            }
+        }
+
+        if let Some(batch) = current_batch {
+            batched_runs.push(batch);
+        }
+
+        (rects, batched_runs, cells_snapshot)
+    }
+
     pub fn layout_grid(
         grid: impl Iterator<Item = IndexedCell>,
         start_line_offset: i32,
         text_style: &TextStyle,
         hyperlink: Option<(HighlightStyle, &RangeInclusive<AlacPoint>)>,
         minimum_contrast: f32,
+        prev_cache: Option<&[(i32, CachedLineLayout)]>,
         cx: &App,
-    ) -> (Vec<LayoutRect>, Vec<BatchedTextRun>) {
+    ) -> (Vec<LayoutRect>, Vec<BatchedTextRun>, Vec<(i32, CachedLineLayout)>) {
         let start_time = Instant::now();
         let theme = cx.theme();
 
-        // Pre-allocate with estimated capacity to reduce reallocations
-        let estimated_cells = grid.size_hint().0;
-        let estimated_runs = estimated_cells / 10; // Estimate ~10 cells per run
-        let estimated_regions = estimated_cells / 20; // Estimate ~20 cells per background region
+        let mut all_rects = Vec::new();
+        let mut all_runs = Vec::new();
+        let mut new_cache: Vec<(i32, CachedLineLayout)> = Vec::new();
+        let mut lines_reused = 0usize;
+        let mut lines_rebuilt = 0usize;
 
-        let mut batched_runs = Vec::with_capacity(estimated_runs);
-        let mut cell_count = 0;
-
-        // Collect background regions for efficient merging
-        let mut background_regions: Vec<BackgroundRegion> = Vec::with_capacity(estimated_regions);
-        let mut current_batch: Option<BatchedTextRun> = None;
-
-        // First pass: collect all cells and their backgrounds
         let linegroups = grid.into_iter().chunk_by(|i| i.point.line);
-        for (line_index, (_, line)) in linegroups.into_iter().enumerate() {
+        for (line_index, (_, line_cells)) in linegroups.into_iter().enumerate() {
             let alac_line = start_line_offset + line_index as i32;
+            let current_cells: Vec<IndexedCell> = line_cells.collect();
 
-            // Flush any existing batch at line boundaries
-            if let Some(batch) = current_batch.take() {
-                batched_runs.push(batch);
-            }
-
-            let mut previous_cell_had_extras = false;
-
-            for cell in line {
-                let mut fg = cell.fg;
-                let mut bg = cell.bg;
-                if cell.flags.contains(Flags::INVERSE) {
-                    mem::swap(&mut fg, &mut bg);
-                }
-
-                // Collect background regions (skip default background)
-                if !matches!(bg, Named(NamedColor::Background)) {
-                    let color = convert_color(&bg, theme);
-                    let col = cell.point.column.0 as i32;
-
-                    // Try to extend the last region if it's on the same line with the same color
-                    if let Some(last_region) = background_regions.last_mut()
-                        && last_region.color == color
-                        && last_region.start_line == alac_line
-                        && last_region.end_line == alac_line
-                        && last_region.end_col + 1 == col
-                    {
-                        last_region.end_col = col;
-                    } else {
-                        background_regions.push(BackgroundRegion::new(alac_line, col, color));
+            if let Some(prev) = prev_cache {
+                if let Some((_, cached)) = prev.iter().find(|(l, _)| *l == alac_line) {
+                    if cached.cells == current_cells {
+                        all_rects.extend_from_slice(&cached.rects);
+                        all_runs.extend(cached.batched_text_runs.iter().cloned());
+                        new_cache.push((alac_line, cached.clone()));
+                        lines_reused += 1;
+                        continue;
                     }
                 }
-                // Skip wide character spacers - they're just placeholders for the second cell of wide characters
-                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                    continue;
-                }
-
-                // Skip spaces that follow cells with extras (emoji variation sequences)
-                if cell.c == ' ' && previous_cell_had_extras {
-                    previous_cell_had_extras = false;
-                    continue;
-                }
-                // Update tracking for next iteration
-                previous_cell_had_extras =
-                    matches!(cell.zerowidth(), Some(chars) if !chars.is_empty());
-
-                //Layout current cell text
-                {
-                    if !is_blank(&cell) {
-                        cell_count += 1;
-                        let cell_style = TerminalElement::cell_style(
-                            &cell,
-                            fg,
-                            bg,
-                            theme,
-                            text_style,
-                            hyperlink,
-                            minimum_contrast,
-                        );
-
-                        let cell_point = AlacPoint::new(alac_line, cell.point.column.0 as i32);
-                        let zero_width_chars = cell.zerowidth();
-
-                        // Try to batch with existing run
-                        if let Some(ref mut batch) = current_batch {
-                            if batch.can_append(&cell_style)
-                                && batch.start_point.line == cell_point.line
-                                && batch.start_point.column + batch.cell_count as i32
-                                    == cell_point.column
-                            {
-                                batch.append_char(cell.c);
-                                if let Some(chars) = zero_width_chars {
-                                    batch.append_zero_width_chars(chars);
-                                }
-                            } else {
-                                // Flush current batch and start new one
-                                let old_batch = current_batch.take().unwrap();
-                                batched_runs.push(old_batch);
-                                let mut new_batch = BatchedTextRun::new_from_char(
-                                    cell_point,
-                                    cell.c,
-                                    cell_style,
-                                    text_style.font_size,
-                                );
-                                if let Some(chars) = zero_width_chars {
-                                    new_batch.append_zero_width_chars(chars);
-                                }
-                                current_batch = Some(new_batch);
-                            }
-                        } else {
-                            // Start new batch
-                            let mut new_batch = BatchedTextRun::new_from_char(
-                                cell_point,
-                                cell.c,
-                                cell_style,
-                                text_style.font_size,
-                            );
-                            if let Some(chars) = zero_width_chars {
-                                new_batch.append_zero_width_chars(chars);
-                            }
-                            current_batch = Some(new_batch);
-                        }
-                    };
-                }
             }
+
+            let (rects, runs, cells_snapshot) = Self::layout_line(
+                alac_line, current_cells.into_iter(),
+                text_style, hyperlink, minimum_contrast, theme,
+            );
+
+            all_rects.extend_from_slice(&rects);
+            all_runs.extend(runs.iter().cloned());
+            new_cache.push((alac_line, CachedLineLayout {
+                cells: cells_snapshot,
+                batched_text_runs: runs,
+                rects,
+            }));
+            lines_rebuilt += 1;
         }
-
-        // Flush any remaining batch
-        if let Some(batch) = current_batch {
-            batched_runs.push(batch);
-        }
-
-        // Second pass: merge background regions and convert to layout rects
-        let region_count = background_regions.len();
-        let merged_regions = merge_background_regions(background_regions);
-        let mut rects = Vec::with_capacity(merged_regions.len() * 2); // Estimate 2 rects per merged region
-
-        // Convert merged regions to layout rects
-        // Since LayoutRect only supports single-line rectangles, we need to split multi-line regions
-        for region in merged_regions {
-            for line in region.start_line..=region.end_line {
-                rects.push(LayoutRect::new(
-                    AlacPoint::new(line, region.start_col),
-                    (region.end_col - region.start_col + 1) as usize,
-                    region.color,
-                ));
-            }
-        }
-
-        let layout_time = start_time.elapsed();
 
         log::debug!(
-            "Terminal layout_grid: {} cells processed, \
-            {} batched runs created, {} rects (from {} merged regions), \
-            layout took {:?}",
-            cell_count,
-            batched_runs.len(),
-            rects.len(),
-            region_count,
-            layout_time
+            "Terminal layout_grid: {} lines reused, {} lines rebuilt, \
+            {} runs, {} rects, took {:?}",
+            lines_reused, lines_rebuilt, all_runs.len(), all_rects.len(),
+            start_time.elapsed(),
         );
 
-        (rects, batched_runs)
+        (all_rects, all_runs, new_cache)
     }
 
     /// Computes the cursor position based on the cursor point and terminal dimensions.
@@ -1124,7 +1120,19 @@ impl Element for TerminalElement {
 
                 let content_mode = self.terminal_view.read(cx).content_mode(window, cx);
 
-                let (rects, batched_text_runs) = TerminalElement::layout_grid(
+                let hovered_word_id = last_hovered_word.as_ref().map(|hw| hw.id);
+                let cache = self.terminal_view.read(cx).line_layout_cache.clone();
+                let prev_cache = cache.borrow_mut().take();
+                let prev_lines = if prev_cache
+                    .as_ref()
+                    .is_some_and(|c| c.is_usable(display_offset, hovered_word_id))
+                {
+                    prev_cache.as_ref().map(|c| c.lines.as_slice())
+                } else {
+                    None
+                };
+
+                let (rects, batched_text_runs, new_lines) = TerminalElement::layout_grid(
                     cells.iter().cloned(),
                     0,
                     &text_style,
@@ -1132,8 +1140,17 @@ impl Element for TerminalElement {
                         .as_ref()
                         .map(|last_hovered_word| (link_style, &last_hovered_word.word_match)),
                     minimum_contrast,
+                    prev_lines,
                     cx,
                 );
+
+                if !batched_text_runs.is_empty() {
+                    *cache.borrow_mut() = Some(LineLayoutCache {
+                        lines: new_lines,
+                        display_offset,
+                        hovered_word_id,
+                    });
+                }
 
                 // Layout cursor. Rectangle is used for IME, so we should lay it out even
                 // if we don't end up showing it.

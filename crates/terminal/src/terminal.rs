@@ -780,7 +780,7 @@ impl TerminalBuilder {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct IndexedCell {
     pub point: AlacPoint,
     pub cell: Cell,
