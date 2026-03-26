@@ -71,6 +71,20 @@ fn forward_key(host: &str, local_port: u16, remote_port: u16) -> String {
     format!("{}:{}:{}", host, local_port, remote_port)
 }
 
+/// Find an available local port, starting from `preferred` and incrementing.
+fn find_available_port(preferred: u16) -> u16 {
+    for port in preferred..=preferred.saturating_add(100) {
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    // Last resort: let the OS pick
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .unwrap_or(preferred)
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct SavedPortForwards {
     /// Map from SSH host name to list of saved forwards
@@ -568,19 +582,12 @@ impl PortsPanel {
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = cx.background_spawn(async move {
-                // Check if local port is already in use on loopback
-                match std::net::TcpListener::bind(("127.0.0.1", local_port)) {
-                    Ok(listener) => drop(listener), // port free, release it
-                    Err(_) => {
-                        anyhow::bail!("Local port {} already in use", local_port);
-                    }
-                }
+                // Find an available local port, starting from the requested one
+                let actual_local_port = find_available_port(local_port);
 
-                // Use default bind (loopback) — 0.0.0.0 requires GatewayPorts
-                // on the server which is usually disabled.
                 let forward_spec = format!(
                     "{}:{}:{}",
-                    local_port, remote_host, remote_port
+                    actual_local_port, remote_host, remote_port
                 );
 
                 let mut cmd = util::command::new_command("ssh");
@@ -602,13 +609,26 @@ impl PortsPanel {
                 cmd.stderr(util::command::Stdio::piped());
 
                 let child = cmd.spawn().context("Failed to spawn SSH tunnel")?;
-                anyhow::Ok(child)
+                anyhow::Ok((child, actual_local_port))
             })
             .await;
 
             match result {
-                Ok(child) => {
+                Ok((child, actual_local_port)) => {
                     *child_arc_clone.lock() = Some(child);
+
+                    // Update the entry's local port if we had to use a different one
+                    if actual_local_port != local_port {
+                        this.update(cx, |this, cx| {
+                            if let Some(entry) = this.forwards.iter_mut().find(|f| {
+                                forward_key(&f.host_name, f.option.local_port, f.option.remote_port)
+                                    == key_for_task
+                            }) {
+                                entry.option.local_port = actual_local_port;
+                            }
+                            cx.notify();
+                        })?;
+                    }
 
                     // Wait for SSH to establish connection and bind port
                     cx.background_spawn(async {
