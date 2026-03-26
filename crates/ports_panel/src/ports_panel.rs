@@ -552,8 +552,11 @@ impl PortsPanel {
         entry.status = ForwardStatus::Starting;
         cx.notify();
 
+        // Bind on 0.0.0.0 explicitly so the tunnel is accessible on both
+        // IPv4 and IPv6 loopback. Without this, Windows SSH may only bind
+        // to 127.0.0.1 while browsers resolve localhost to ::1.
         let forward_spec = format!(
-            "{}:{}:{}",
+            "0.0.0.0:{}:{}:{}",
             local_port, remote_host, remote_port
         );
 
