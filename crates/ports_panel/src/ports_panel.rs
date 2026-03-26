@@ -640,7 +640,21 @@ impl PortsPanel {
                 actual_local_port, remote_port, ssh_destination
             );
 
-            let mut cmd = std::process::Command::new("ssh");
+            // Use system OpenSSH on Windows — user PATH may contain non-Windows
+            // SSH binaries (e.g. Ubuntu/WSL builds) that exit immediately with -N.
+            #[cfg(target_os = "windows")]
+            let ssh_binary = {
+                let system_ssh = std::path::Path::new("C:\\Windows\\System32\\OpenSSH\\ssh.exe");
+                if system_ssh.exists() {
+                    system_ssh.to_string_lossy().to_string()
+                } else {
+                    "ssh".to_string()
+                }
+            };
+            #[cfg(not(target_os = "windows"))]
+            let ssh_binary = "ssh".to_string();
+
+            let mut cmd = std::process::Command::new(&ssh_binary);
             cmd.arg("-N");
             cmd.arg("-L").arg(&forward_spec);
             cmd.arg("-o").arg("ExitOnForwardFailure=yes");
