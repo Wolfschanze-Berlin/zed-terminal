@@ -3024,7 +3024,7 @@ mod tests {
         }
 
         TerminalContent {
-            cells: ic,
+            cells: Arc::new(ic),
             terminal_bounds,
             ..Default::default()
         }
@@ -3064,7 +3064,7 @@ mod tests {
         let mut line1_col0 = false;
         let mut line2_col0 = false;
 
-        for cell in cells {
+        for cell in cells.iter() {
             if cell.c == 'l' && cell.point.column.0 == 0 {
                 if cell.point.line.0 == 0 && !line1_col0 {
                     line1_col0 = true;
@@ -3108,7 +3108,7 @@ mod tests {
 
         // Check that both lines start at column 0
         let mut found_lines_at_column_0 = 0;
-        for cell in cells {
+        for cell in cells.iter() {
             if cell.c == 'l' && cell.point.column.0 == 0 {
                 found_lines_at_column_0 += 1;
             }

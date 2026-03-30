@@ -45,6 +45,16 @@ pub struct CachedLineLayout {
     rects: Vec<LayoutRect>,
 }
 
+/// Cached grid layout results for cursor-only repaints.
+/// When only the cursor blink state changes, we reuse this instead of
+/// re-running layout_grid() on all cells.
+#[derive(Clone)]
+pub struct GridLayoutCache {
+    rects: Vec<LayoutRect>,
+    batched_text_runs: Vec<BatchedTextRun>,
+    relative_highlighted_ranges: Vec<(RangeInclusive<AlacPoint>, Hsla)>,
+}
+
 /// Cache of per-line layout results for dirty-line tracking.
 /// Only lines whose cells have changed are re-laid out.
 pub struct LineLayoutCache {
@@ -386,6 +396,7 @@ pub struct TerminalElement {
     focus: FocusHandle,
     focused: bool,
     cursor_visible: bool,
+    blink_only: bool,
     interactivity: Interactivity,
     mode: TerminalMode,
     block_below_cursor: Option<Rc<BlockProperties>>,
@@ -407,6 +418,7 @@ impl TerminalElement {
         focus: FocusHandle,
         focused: bool,
         cursor_visible: bool,
+        blink_only: bool,
         block_below_cursor: Option<Rc<BlockProperties>>,
         mode: TerminalMode,
     ) -> TerminalElement {
@@ -417,6 +429,7 @@ impl TerminalElement {
             focused,
             focus: focus.clone(),
             cursor_visible,
+            blink_only,
             block_below_cursor,
             mode,
             interactivity: Default::default(),
@@ -1106,51 +1119,79 @@ impl Element for TerminalElement {
                 let mode = *mode;
                 let display_offset = *display_offset;
 
-                // searches, highlights to a single range representations
-                let mut relative_highlighted_ranges = Vec::new();
-                for search_match in search_matches {
-                    relative_highlighted_ranges.push((search_match, match_color))
-                }
-                if let Some(selection) = selection {
-                    relative_highlighted_ranges
-                        .push((selection.start..=selection.end, player_color.selection));
-                }
-
-                // then have that representation be converted to the appropriate highlight data structure
-
                 let content_mode = self.terminal_view.read(cx).content_mode(window, cx);
 
-                let hovered_word_id = last_hovered_word.as_ref().map(|hw| hw.id);
-                let cache = self.terminal_view.read(cx).line_layout_cache.clone();
-                let prev_cache = cache.borrow_mut().take();
-                let prev_lines = if prev_cache
-                    .as_ref()
-                    .is_some_and(|c| c.is_usable(display_offset, hovered_word_id))
-                {
-                    prev_cache.as_ref().map(|c| c.lines.as_slice())
-                } else {
-                    None
-                };
+                let grid_cache_cell = self.terminal_view.read(cx).grid_layout_cache.clone();
+                let (rects, batched_text_runs, relative_highlighted_ranges) =
+                    if self.blink_only {
+                        if let Some(cached) = grid_cache_cell.borrow().as_ref() {
+                            log::debug!("Terminal prepaint: blink-only, reusing cached grid layout");
+                            (
+                                cached.rects.clone(),
+                                cached.batched_text_runs.clone(),
+                                cached.relative_highlighted_ranges.clone(),
+                            )
+                        } else {
+                            self.blink_only = false;
+                            (Vec::new(), Vec::new(), Vec::new())
+                        }
+                    } else {
+                        (Vec::new(), Vec::new(), Vec::new())
+                    };
 
-                let (rects, batched_text_runs, new_lines) = TerminalElement::layout_grid(
-                    cells.iter().cloned(),
-                    0,
-                    &text_style,
-                    last_hovered_word
+                let (rects, batched_text_runs, relative_highlighted_ranges) = if !self.blink_only {
+                    // Build highlighted ranges from search matches and selection
+                    let mut relative_highlighted_ranges = Vec::new();
+                    for search_match in search_matches {
+                        relative_highlighted_ranges.push((search_match, match_color))
+                    }
+                    if let Some(selection) = selection {
+                        relative_highlighted_ranges
+                            .push((selection.start..=selection.end, player_color.selection));
+                    }
+
+                    let hovered_word_id = last_hovered_word.as_ref().map(|hw| hw.id);
+                    let cache = self.terminal_view.read(cx).line_layout_cache.clone();
+                    let prev_cache = cache.borrow_mut().take();
+                    let prev_lines = if prev_cache
                         .as_ref()
-                        .map(|last_hovered_word| (link_style, &last_hovered_word.word_match)),
-                    minimum_contrast,
-                    prev_lines,
-                    cx,
-                );
+                        .is_some_and(|c| c.is_usable(display_offset, hovered_word_id))
+                    {
+                        prev_cache.as_ref().map(|c| c.lines.as_slice())
+                    } else {
+                        None
+                    };
 
-                if !batched_text_runs.is_empty() {
-                    *cache.borrow_mut() = Some(LineLayoutCache {
-                        lines: new_lines,
-                        display_offset,
-                        hovered_word_id,
+                    let (rects, batched_text_runs, new_lines) = TerminalElement::layout_grid(
+                        cells.iter().cloned(),
+                        0,
+                        &text_style,
+                        last_hovered_word
+                            .as_ref()
+                            .map(|last_hovered_word| (link_style, &last_hovered_word.word_match)),
+                        minimum_contrast,
+                        prev_lines,
+                        cx,
+                    );
+
+                    if !batched_text_runs.is_empty() {
+                        *cache.borrow_mut() = Some(LineLayoutCache {
+                            lines: new_lines,
+                            display_offset,
+                            hovered_word_id,
+                        });
+                    }
+
+                    *grid_cache_cell.borrow_mut() = Some(GridLayoutCache {
+                        rects: rects.clone(),
+                        batched_text_runs: batched_text_runs.clone(),
+                        relative_highlighted_ranges: relative_highlighted_ranges.clone(),
                     });
-                }
+
+                    (rects, batched_text_runs, relative_highlighted_ranges)
+                } else {
+                    (rects, batched_text_runs, relative_highlighted_ranges)
+                };
 
                 // Layout cursor. Rectangle is used for IME, so we should lay it out even
                 // if we don't end up showing it.

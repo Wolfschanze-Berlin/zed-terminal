@@ -41,7 +41,7 @@ use terminal::{
     },
     terminal_settings::{CursorShape, TerminalSettings},
 };
-use terminal_element::{LineLayoutCache, TerminalElement};
+use terminal_element::{GridLayoutCache, LineLayoutCache, TerminalElement};
 use terminal_panel::TerminalPanel;
 use terminal_path_like_target::{hover_path_like_target, open_path_like_target};
 use terminal_scrollbar::TerminalScrollHandle;
@@ -148,6 +148,8 @@ pub struct TerminalView {
     ime_state: Option<ImeState>,
     self_handle: WeakEntity<Self>,
     pub line_layout_cache: Rc<RefCell<Option<LineLayoutCache>>>,
+    pub grid_layout_cache: Rc<RefCell<Option<GridLayoutCache>>>,
+    last_content_generation: usize,
     rename_editor: Option<Entity<Editor>>,
     rename_editor_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
@@ -299,6 +301,8 @@ impl TerminalView {
             ime_state: None,
             self_handle: cx.entity().downgrade(),
             line_layout_cache: Rc::new(RefCell::new(None)),
+            grid_layout_cache: Rc::new(RefCell::new(None)),
+            last_content_generation: 0,
             rename_editor: None,
             rename_editor_subscription: None,
             _subscriptions: subscriptions,
@@ -1264,16 +1268,22 @@ impl Render for TerminalView {
                     .id("terminal-view-container")
                     .size_full()
                     .bg(cx.theme().colors().editor_background)
-                    .child(TerminalElement::new(
-                        terminal_handle,
-                        terminal_view_handle,
-                        self.workspace.clone(),
-                        self.focus_handle.clone(),
-                        focused,
-                        self.should_show_cursor(focused, cx),
-                        self.block_below_cursor.clone(),
-                        self.mode.clone(),
-                    ))
+                    .child({
+                        let current_generation = self.terminal.read(cx).last_content.generation;
+                        let blink_only = current_generation == self.last_content_generation;
+                        self.last_content_generation = current_generation;
+                        TerminalElement::new(
+                            terminal_handle,
+                            terminal_view_handle,
+                            self.workspace.clone(),
+                            self.focus_handle.clone(),
+                            focused,
+                            self.should_show_cursor(focused, cx),
+                            blink_only,
+                            self.block_below_cursor.clone(),
+                            self.mode.clone(),
+                        )
+                    })
                     .when(self.content_mode(window, cx).is_scrollable(), |div| {
                         div.custom_scrollbars(
                             Scrollbars::for_settings::<TerminalScrollbarSettingsWrapper>()
